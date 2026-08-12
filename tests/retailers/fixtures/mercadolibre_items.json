@@ -1,0 +1,48 @@
+[
+  {
+    "code": 200,
+    "body": {
+      "id": "MLA1001",
+      "title": "Whisky Escocés Ejemplo 750 ml",
+      "price": 24500,
+      "original_price": 28000,
+      "currency_id": "ARS",
+      "permalink": "https://articulo.mercadolibre.com.ar/MLA-1001",
+      "condition": "new",
+      "status": "active",
+      "available_quantity": 7,
+      "seller_id": 12345,
+      "official_store_id": 987,
+      "catalog_product_id": "MLA-CATALOG-1001",
+      "variation_id": 555,
+      "attributes": [
+        {"id": "BRAND", "value_name": "Ejemplo"},
+        {"id": "GTIN", "value_name": "7790895000997"},
+        {"id": "VOLUME", "value_name": "750 mL"},
+        {"id": "UNITS_PER_PACK", "value_name": "1"}
+      ]
+    }
+  },
+  {
+    "code": 200,
+    "body": {
+      "id": "MLA1002",
+      "title": "Pack x6 Whisky Bourbon 1 L",
+      "price": "120000.50",
+      "original_price": null,
+      "currency_id": "ARS",
+      "permalink": "https://articulo.mercadolibre.com.ar/MLA-1002",
+      "condition": "new",
+      "status": "paused",
+      "available_quantity": 0,
+      "seller": {"id": 45678},
+      "catalog_product_id": null,
+      "attributes": [
+        {"id": "BRAND", "value_name": "Bourbon Co"},
+        {"id": "EAN", "value_name": "not-a-valid-gtin"},
+        {"id": "VOLUME", "value_struct": {"number": 1, "unit": "L"}},
+        {"id": "UNITS_PER_PACK", "value_name": "6 unidades"}
+      ]
+    }
+  }
+]

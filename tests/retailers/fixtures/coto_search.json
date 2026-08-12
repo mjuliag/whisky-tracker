@@ -1,0 +1,89 @@
+{
+  "response": {
+    "total_num_results": 4,
+    "results": [
+      {
+        "value": "Whisky Ejemplo 750 ML",
+        "data": {
+          "id": "prod001",
+          "sku_id": "sku001",
+          "sku_display_name": "Whisky Ejemplo 750 ML",
+          "product_brand": "Ejemplo",
+          "product_main_ean": 7791234567890,
+          "url": "_/R-001-001-200",
+          "price": [
+            {"store": "060", "listPrice": 12000},
+            {"store": "200", "listPrice": 20000}
+          ],
+          "store_availability": ["060", "200"],
+          "discounts": [{
+            "id": "discount-1",
+            "comments": "No acumulable con otras promos",
+            "takingText": null,
+            "discountText": "25%Dto",
+            "discountPrice": "$15000.00",
+            "regularPriceText": "Precio Contado: $20000"
+          }],
+          "discounts_payment_methods": [{
+            "id": "payment-1",
+            "comentarios": "Tarjetas seleccionadas",
+            "precioCuota": "$5000",
+            "cantidadCuotas": "3",
+            "imagenDescuento": "/content/images/tarjetas.png"
+          }]
+        }
+      },
+      {
+        "value": "Whisky Sin Stock 1 LT",
+        "data": {
+          "id": "prod002",
+          "sku_id": "sku002",
+          "sku_display_name": "Whisky Sin Stock 1 LT",
+          "product_brand": "Marca",
+          "product_main_ean": "7790000000002",
+          "url": "https://www.coto.com.ar/productos/_/R-002",
+          "price": [{"store": "200", "listPrice": "30000"}],
+          "store_availability": ["060"],
+          "discounts": [],
+          "discounts_payment_methods": []
+        }
+      },
+      {
+        "value": "Whisky Otra Sucursal 700 ML",
+        "data": {
+          "id": "prod003",
+          "sku_id": "sku003",
+          "sku_display_name": "Whisky Otra Sucursal 700 ML",
+          "product_brand": "Marca",
+          "product_main_ean": null,
+          "url": "_/R-003",
+          "price": [{"store": "060", "listPrice": 10000}],
+          "store_availability": ["060"],
+          "discounts": [],
+          "discounts_payment_methods": []
+        }
+      },
+      {
+        "value": "Whisky Comunidad Coto 700 ML",
+        "data": {
+          "id": "prod004",
+          "sku_id": "sku004",
+          "sku_display_name": "Whisky Comunidad Coto 700 ML",
+          "product_brand": "Marca",
+          "product_main_ean": null,
+          "url": "productos/_/R-004",
+          "price": [{"store": "200", "listPrice": 40000}],
+          "store_availability": ["200"],
+          "discounts": [{
+            "id": "discount-4",
+            "comments": "Exclusivo Comunidad Coto",
+            "discountText": "20% Dto",
+            "discountPrice": "$32000",
+            "regularPriceText": "$40000"
+          }],
+          "discounts_payment_methods": []
+        }
+      }
+    ]
+  }
+}

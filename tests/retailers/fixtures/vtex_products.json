@@ -1,0 +1,60 @@
+[
+  {
+    "productId": "product-1",
+    "productName": "Whisky Example",
+    "brand": "Example Distillery",
+    "link": "https://example.test/whisky-example/p",
+    "items": [
+      {
+        "itemId": "sku-750",
+        "name": "Whisky Example 750 ml",
+        "nameComplete": "Whisky Example 750 ml",
+        "ean": "7790000000001",
+        "sellers": [
+          {
+            "sellerId": "unavailable",
+            "sellerDefault": true,
+            "commertialOffer": {
+              "Price": 9500.5,
+              "ListPrice": 11000,
+              "AvailableQuantity": 0,
+              "discountHighlights": [],
+              "teasers": []
+            }
+          },
+          {
+            "sellerId": "available",
+            "sellerDefault": false,
+            "commertialOffer": {
+              "Price": 10000.25,
+              "ListPrice": 12000,
+              "AvailableQuantity": 8,
+              "discountHighlights": [{"name": "Oferta semanal"}],
+              "teasers": [{"name": "Llevando 2 unidades"}]
+            }
+          }
+        ]
+      },
+      {
+        "itemId": "sku-1l",
+        "name": "Whisky Example 1 L",
+        "nameComplete": "Whisky Example 1 L",
+        "ean": "",
+        "sellers": [
+          {
+            "sellerId": "main",
+            "sellerDefault": true,
+            "commertialOffer": {
+              "Price": "15000.90",
+              "ListPrice": "9999999.99",
+              "AvailableQuantity": 0,
+              "discountHighlights": [],
+              "teasers": []
+            }
+          }
+        ]
+      }
+    ]
+  }
+]
+
