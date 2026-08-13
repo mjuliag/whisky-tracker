@@ -1,5 +1,71 @@
 # Whisky Tracker
 
+## Manual collection run
+
+Configure the local `.env` values documented in `.env.example`, then run one complete collection:
+
+```bash
+python -m whisky_tracker run
+```
+
+Use `--dry-run` for a safe inspection pass. Dry runs still persist observations and evaluate alerts
+so history and idempotency behave realistically, but they never send Telegram messages or mark
+alerts as sent:
+
+```bash
+python -m whisky_tracker run --dry-run
+python -m whisky_tracker run --dry-run --retailer coto --retailer jumbo
+```
+
+Carrefour is skipped unless `CARREFOUR_POSTAL_CODE` is configured. Mercado Libre is optional and
+is skipped unless its access token is configured. Coto uses its explicit default Digital branch,
+while Jumbo remains labeled as generic context.
+
+## GitHub Actions deployment
+
+The `Whisky Tracker` workflow runs at 13:17 and 21:17 UTC, approximately 10:17 and 18:17 in
+Argentina. GitHub schedules are approximate and may be delayed under load. The schedule only runs
+from the repository's default branch.
+
+Configure these repository **Secrets** under Settings → Secrets and variables → Actions:
+
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_CHAT_ID`
+- optionally `MERCADOLIBRE_ACCESS_TOKEN`, `MERCADOLIBRE_REFRESH_TOKEN`,
+  `MERCADOLIBRE_CLIENT_ID`, and `MERCADOLIBRE_CLIENT_SECRET`
+
+Configure these non-secret repository **Variables**:
+
+- `CARREFOUR_POSTAL_CODE` (recommended: `1428` for the intended Market Juramento context)
+- `NOTIFICATIONS_ENABLED`: leave unset or set to anything other than `true` while validating;
+  set exactly `true` to enable notifications on scheduled runs
+- optionally `MAX_NOTIFICATIONS_PER_RUN` and the three `MINIMUM_*_PERCENTAGE` thresholds
+
+From Actions → Whisky Tracker → Run workflow, keep `dry_run` enabled for the first cloud run. This
+tests collection, matching, persistence, and alert evaluation without sending or marking alerts.
+After reviewing its job summary, a manual run with `dry_run` disabled exercises real delivery.
+
+Production starts with a fresh database. The workflow does not upload the local development
+database. Durable state is stored outside the source branch on an orphan `whisky-tracker-state`
+branch containing the current and previous validated SQLite generations. A force-with-lease and a
+single Actions concurrency group prevent state rollback by overlapping runs. Each successful run
+also uploads a 30-day recovery artifact. Do not manually edit the state branch. In a public
+repository its database contents are public; they contain price/listing history but should never
+contain configured tokens.
+
+Every restore and publication runs SQLite integrity validation. Once the state branch exists, a
+restore/network failure stops the job rather than silently initializing an empty database. Run
+diagnostics and the application summary appear on the workflow run's Summary page.
+
+Mercado Libre token refresh is currently in-memory only. GitHub Actions cannot safely rewrite an
+Actions Secret using its normal workflow token, so a refreshed access/refresh token is not retained
+between runs. Leave Mercado Libre unconfigured until credentials with a suitable lifetime or a
+separate approved secret-rotation mechanism are available.
+
+To disable autonomous execution without editing application logic, disable the `Whisky Tracker`
+workflow from its Actions page. Setting `NOTIFICATIONS_ENABLED` to `false` keeps scheduled
+collection/state updates active but makes scheduled executions dry runs.
+
 ## Mercado Libre development authentication
 
 Mercado Libre retrieval uses its official authenticated API. Create a Mercado Libre developer

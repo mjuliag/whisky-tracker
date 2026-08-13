@@ -12,6 +12,7 @@ import httpx
 from whisky_tracker.models.context import RetailerContext
 from whisky_tracker.models.product import ProductObservation
 from whisky_tracker.models.promotion import DiscountType, Promotion, PromotionKind
+from whisky_tracker.product_filter import is_obvious_non_whisky_title
 from whisky_tracker.retailers.base import RetailerError
 
 _RESOURCES_PATTERN = re.compile(r"^(?P<start>\d+)-(?P<end>\d+)/(?P<total>\d+)$")
@@ -228,6 +229,8 @@ class VtexAdapter:
             offer.get("ListPrice"), field="ListPrice", sku_id=sku_id
         )
         title = self._first_string(item.get("nameComplete"), item.get("name"), product_name)
+        if is_obvious_non_whisky_title(title):
+            return None
         size_value, size_unit = self._extract_size(title)
         promotions = self._extract_promotions(offer)
         product_url = self._first_string(product.get("link"))

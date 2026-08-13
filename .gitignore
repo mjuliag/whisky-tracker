@@ -6,4 +6,9 @@ __pycache__/
 .env
 .env.*
 !.env.example
-
+data/*.db
+data/*.db-*
+*.sqlite
+*.sqlite3
+runtime-state/
+state-publish/

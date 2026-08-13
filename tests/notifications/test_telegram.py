@@ -73,6 +73,19 @@ def test_send_message_uses_official_request_shape() -> None:
     }
 
 
+def test_send_message_supports_explicit_html_parse_mode() -> None:
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["form"] = parse_qs(request.content.decode())
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 42}})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    notifier = TelegramNotifier(config=TelegramConfig("fake-token", "123"), client=client)
+    run(notifier.send_message("<b>Safe</b>", parse_mode="HTML"))
+    assert seen["form"]["parse_mode"] == ["HTML"]
+
+
 def test_formats_located_carrefour_product_with_applied_promotion() -> None:
     promotion = Promotion(
         name="25% Mi Carrefour",

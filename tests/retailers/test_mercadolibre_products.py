@@ -73,3 +73,7 @@ def test_filter_removes_obvious_accessories_but_retains_whisky() -> None:
 def test_gtin_validation_rejects_wrong_check_digit() -> None:
     attributes = [{"id": "GTIN", "value_name": "7791234567891"}]
     assert MercadoLibreAdapter._extract_gtin(attributes) is None
+
+
+def test_pack_count_stays_unknown_without_explicit_marketplace_evidence() -> None:
+    assert MercadoLibreAdapter._extract_pack_count([], "Whisky single malt 750 ml") is None

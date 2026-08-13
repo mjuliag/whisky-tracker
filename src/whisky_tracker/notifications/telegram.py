@@ -87,15 +87,25 @@ class TelegramNotifier:
             await self._client.aclose()
             self._client = None
 
-    async def send_message(self, text: str, *, chat_id: str | int | None = None) -> int:
+    async def send_message(
+        self,
+        text: str,
+        *,
+        chat_id: str | int | None = None,
+        parse_mode: str | None = None,
+    ) -> int:
         """Send one plain-text message and return Telegram's numeric message ID."""
         if not text.strip():
             raise ValueError("Telegram message text must not be blank")
         destination = str(chat_id).strip() if chat_id is not None else self.config.require_chat_id()
-        payload = await self._call(
-            "sendMessage",
-            data={"chat_id": destination, "text": text, "disable_web_page_preview": True},
-        )
+        data: dict[str, Any] = {
+            "chat_id": destination,
+            "text": text,
+            "disable_web_page_preview": True,
+        }
+        if parse_mode:
+            data["parse_mode"] = parse_mode
+        payload = await self._call("sendMessage", data=data)
         result = payload.get("result")
         if not isinstance(result, Mapping) or not isinstance(result.get("message_id"), int):
             raise TelegramResponseError("Telegram sendMessage response has no message ID")

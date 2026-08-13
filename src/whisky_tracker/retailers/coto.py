@@ -15,6 +15,7 @@ import httpx
 from whisky_tracker.models.context import ContextResolution, FulfillmentMode, RetailerContext
 from whisky_tracker.models.product import ProductObservation
 from whisky_tracker.models.promotion import DiscountType, Promotion, PromotionKind
+from whisky_tracker.product_filter import is_obvious_non_whisky_title
 from whisky_tracker.retailers.base import RetailerError
 
 _TRANSIENT_STATUSES = {429, 500, 502, 503, 504}
@@ -198,6 +199,8 @@ class CotoAdapter:
         title = self._text(data.get("sku_display_name")) or self._text(result.get("value"))
         if not title:
             raise CotoSchemaError(f"Coto product {product_id!r} has no title")
+        if is_obvious_non_whisky_title(title):
+            return None
 
         branch_id = context.store_id
         prices = data.get("price")
@@ -337,6 +340,8 @@ class CotoAdapter:
             raise CotoSchemaError("Coto product has no URL")
         if value.startswith(("http://", "https://")):
             return value
+        if value.startswith("/productos/"):
+            return urljoin(self.config.storefront_url, value)
         if value.startswith("productos/"):
             value = value.removeprefix("productos/")
         return urljoin(self.config.storefront_url, value.lstrip("/"))

@@ -10,6 +10,7 @@ from typing import Any
 
 import httpx
 
+from whisky_tracker.identifiers import is_valid_gtin, normalize_gtin
 from whisky_tracker.models.context import ContextResolution, FulfillmentMode, RetailerContext
 from whisky_tracker.models.product import ProductObservation
 from whisky_tracker.retailers.base import RetailerError
@@ -403,20 +404,11 @@ class MercadoLibreAdapter:
     @classmethod
     def _extract_gtin(cls, attributes: Sequence[Mapping[str, Any]]) -> str | None:
         value = cls._attribute_value(attributes, _GTIN_ATTRIBUTE_IDS)
-        if not value:
-            return None
-        digits = re.sub(r"\D", "", value)
-        if len(digits) not in {8, 12, 13, 14} or not cls._valid_gtin_check_digit(digits):
-            return None
-        return digits
+        return normalize_gtin(value)
 
     @staticmethod
     def _valid_gtin_check_digit(digits: str) -> bool:
-        total = sum(
-            int(character) * (3 if index % 2 == 0 else 1)
-            for index, character in enumerate(reversed(digits[:-1]))
-        )
-        return (10 - total % 10) % 10 == int(digits[-1])
+        return is_valid_gtin(digits)
 
     @classmethod
     def _extract_volume(
@@ -441,7 +433,7 @@ class MercadoLibreAdapter:
             match = pattern.search(title)
             if match and int(match.group("count")) > 0:
                 return int(match.group("count"))
-        return 1
+        return None
 
     @classmethod
     def _attribute_value(

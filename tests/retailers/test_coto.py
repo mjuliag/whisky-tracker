@@ -79,6 +79,13 @@ def test_member_discount_is_conditional_and_not_current_price() -> None:
     assert product.product_url == "https://www.coto.com.ar/productos/_/R-004"
 
 
+def test_gentleman_jack_product_url_preserves_exact_coto_identity() -> None:
+    adapter = CotoAdapter()
+    assert adapter._product_url("/productos/_/R-00602091-00602091-200") == (
+        "https://www.coto.com.ar/productos/_/R-00602091-00602091-200"
+    )
+
+
 def test_paginates_one_based_and_stops_at_total() -> None:
     fixture = load_fixture()
     source = fixture["response"]["results"][:2]

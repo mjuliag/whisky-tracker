@@ -1,0 +1,174 @@
+name: Whisky Tracker
+
+on:
+  schedule:
+    # Approximately 10:17 and 18:17 Argentina time (UTC-3).
+    - cron: "17 13 * * *"
+    - cron: "17 21 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Evaluate and persist state without sending Telegram notifications
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: whisky-tracker-production
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.14"
+  STATE_BRANCH: whisky-tracker-state
+  STATE_DB: runtime-state/whisky_tracker.db
+  WHISKY_TRACKER_DB_PATH: runtime-state/whisky_tracker.db
+  CARREFOUR_POSTAL_CODE: ${{ vars.CARREFOUR_POSTAL_CODE || '1428' }}
+  MAX_NOTIFICATIONS_PER_RUN: ${{ vars.MAX_NOTIFICATIONS_PER_RUN || '10' }}
+  MINIMUM_PRICE_DROP_PERCENTAGE: ${{ vars.MINIMUM_PRICE_DROP_PERCENTAGE || '10' }}
+  MINIMUM_CROSS_RETAILER_DIFFERENCE_PERCENTAGE: ${{ vars.MINIMUM_CROSS_RETAILER_DIFFERENCE_PERCENTAGE || '10' }}
+  MINIMUM_PROMOTION_DISCOUNT_PERCENTAGE: ${{ vars.MINIMUM_PROMOTION_DISCOUNT_PERCENTAGE || '25' }}
+  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+  TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+  MERCADOLIBRE_ACCESS_TOKEN: ${{ secrets.MERCADOLIBRE_ACCESS_TOKEN }}
+  MERCADOLIBRE_REFRESH_TOKEN: ${{ secrets.MERCADOLIBRE_REFRESH_TOKEN }}
+  MERCADOLIBRE_CLIENT_ID: ${{ secrets.MERCADOLIBRE_CLIENT_ID }}
+  MERCADOLIBRE_CLIENT_SECRET: ${{ secrets.MERCADOLIBRE_CLIENT_SECRET }}
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out application
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install application
+        run: python -m pip install .
+
+      - name: Restore authoritative state
+        id: restore
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p runtime-state state-publish
+          set +e
+          git ls-remote --exit-code --heads origin "$STATE_BRANCH" >/dev/null 2>&1
+          branch_status=$?
+          set -e
+          if [[ "$branch_status" -eq 0 ]]; then
+            git fetch --no-tags origin "refs/heads/$STATE_BRANCH:refs/remotes/origin/$STATE_BRANCH"
+            state_sha=$(git rev-parse "refs/remotes/origin/$STATE_BRANCH")
+            git show "refs/remotes/origin/$STATE_BRANCH:current.db" > "$STATE_DB"
+            python -m whisky_tracker.cloud_state validate "$STATE_DB"
+            python -m whisky_tracker.cloud_state snapshot "$STATE_DB" state-publish/previous.db
+            echo "source=state branch at $state_sha" >> "$GITHUB_OUTPUT"
+            echo "state_sha=$state_sha" >> "$GITHUB_OUTPUT"
+          elif [[ "$branch_status" -eq 2 ]]; then
+            python -m whisky_tracker.cloud_state validate "$STATE_DB" --allow-missing
+            echo "source=fresh production bootstrap" >> "$GITHUB_OUTPUT"
+            echo "state_sha=" >> "$GITHUB_OUTPUT"
+          else
+            echo "State branch lookup failed; refusing an unsafe empty bootstrap" >&2
+            exit "$branch_status"
+          fi
+
+      - name: Select notification mode
+        id: mode
+        shell: bash
+        env:
+          MANUAL_DRY_RUN: ${{ inputs.dry_run }}
+          SCHEDULE_NOTIFICATIONS_ENABLED: ${{ vars.NOTIFICATIONS_ENABLED }}
+        run: |
+          set -euo pipefail
+          dry_run=false
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "$MANUAL_DRY_RUN" == "true" ]]; then
+            dry_run=true
+          elif [[ "$GITHUB_EVENT_NAME" == "schedule" && "$SCHEDULE_NOTIFICATIONS_ENABLED" != "true" ]]; then
+            dry_run=true
+          fi
+          echo "dry_run=$dry_run" >> "$GITHUB_OUTPUT"
+
+      - name: Run Whisky Tracker
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(run)
+          if [[ "${{ steps.mode.outputs.dry_run }}" == "true" ]]; then
+            args+=(--dry-run)
+          fi
+          python -m whisky_tracker "${args[@]}" | tee run-summary.txt
+
+      - name: Validate and snapshot updated state
+        run: |
+          python -m whisky_tracker.cloud_state validate "$STATE_DB"
+          python -m whisky_tracker.cloud_state snapshot "$STATE_DB" state-publish/current.db
+
+      - name: Publish authoritative state branch
+        shell: bash
+        env:
+          PRIOR_STATE_SHA: ${{ steps.restore.outputs.state_sha }}
+          STATE_PUSH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd state-publish
+          git init --quiet
+          git checkout --orphan "$STATE_BRANCH"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          printf '%s\n' \
+            "format=1" \
+            "source_run_id=$GITHUB_RUN_ID" \
+            "source_run_attempt=$GITHUB_RUN_ATTEMPT" \
+            "updated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" > manifest.txt
+          git add current.db manifest.txt
+          if [[ -f previous.db ]]; then git add previous.db; fi
+          git commit --quiet -m "Update Whisky Tracker state from run $GITHUB_RUN_ID"
+          git remote add origin \
+            "https://x-access-token:${STATE_PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if [[ -n "$PRIOR_STATE_SHA" ]]; then
+            git push --force-with-lease="refs/heads/$STATE_BRANCH:$PRIOR_STATE_SHA" \
+              origin "HEAD:refs/heads/$STATE_BRANCH"
+          else
+            git push origin "HEAD:refs/heads/$STATE_BRANCH"
+          fi
+
+      - name: Upload recovery snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: whisky-tracker-state-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            state-publish/current.db
+            state-publish/previous.db
+            state-publish/manifest.txt
+            run-summary.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Write job summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Whisky Tracker run"
+            echo
+            echo "- State restore: ${{ steps.restore.outputs.source || 'restore did not complete' }}"
+            echo "- Dry run: ${{ steps.mode.outputs.dry_run || 'unknown' }}"
+            echo "- Database integrity: see validation steps"
+            echo "- Run ID: $GITHUB_RUN_ID (attempt $GITHUB_RUN_ATTEMPT)"
+            if [[ -f run-summary.txt ]]; then
+              echo
+              echo '```text'
+              cat run-summary.txt
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
