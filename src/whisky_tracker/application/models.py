@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from enum import StrEnum
 
-from whisky_tracker.alerts import Alert
+from whisky_tracker.alerts import ProductAlert
 from whisky_tracker.matching import ProductMatchGroup
 
 
@@ -44,7 +44,7 @@ class RunSummary:
     observations_stored: int
     database_path: str
     schema_version: int
-    eligible_alerts: tuple[Alert, ...]
+    eligible_alerts: tuple[ProductAlert, ...]
     alerts_sent: int
     notification_failures: tuple[NotificationFailure, ...]
     dry_run: bool
@@ -61,5 +61,5 @@ class RunSummary:
         return max(0, len(self.eligible_alerts) - self.notification_cap)
 
     @property
-    def alerts_selected_for_delivery(self) -> tuple[Alert, ...]:
+    def alerts_selected_for_delivery(self) -> tuple[ProductAlert, ...]:
         return self.eligible_alerts[: self.notification_cap]

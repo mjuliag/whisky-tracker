@@ -115,6 +115,12 @@ MIGRATIONS: tuple[str, ...] = (
 
     CREATE INDEX alert_events_status ON alert_events(status, fingerprint);
     """,
+    """
+    ALTER TABLE alert_events ADD COLUMN model_version INTEGER NOT NULL DEFAULT 1
+        CHECK (model_version IN (1, 2));
+    CREATE INDEX alert_events_model_status
+        ON alert_events(model_version, status, fingerprint);
+    """,
 )
 
 LATEST_SCHEMA_VERSION = len(MIGRATIONS)

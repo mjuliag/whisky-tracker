@@ -48,6 +48,12 @@ Configure these non-secret repository **Variables**:
   set exactly `true` to enable notifications on scheduled runs
 - optionally `MAX_NOTIFICATIONS_PER_RUN` and the three `MINIMUM_*_PERCENTAGE` thresholds
 
+The notification cap counts consolidated canonical whiskies, not retailer listings. One product
+message can include the current comparable offers from several retailers, with promotions and
+historical signals kept under the retailer that produced them. Alert-state schema version 3 keeps
+legacy listing-alert rows as version 1 history; only version-2 product candidates are reconstructed
+for current delivery, so old pending listing notifications remain inert.
+
 From Actions → Whisky Tracker → Run workflow, keep `dry_run` enabled for the first cloud run. This
 tests collection, matching, persistence, and alert evaluation without sending or marking alerts.
 After reviewing its job summary, a manual run with `dry_run` disabled exercises real delivery.

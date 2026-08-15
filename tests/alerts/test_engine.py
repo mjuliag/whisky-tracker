@@ -554,3 +554,232 @@ def test_candidate_ordering_uses_explicit_signal_tiers(repository: SQLiteReposit
         key=alert_priority_key,
     )
     assert ranked == [strongest, cross_combined, price_drop, historical, promotion_only]
+
+
+def test_product_alert_consolidates_retailers_and_keeps_signal_ownership(
+    repository: SQLiteRepository,
+) -> None:
+    coto_promotion = Promotion(
+        "35%Dto", PromotionKind.GENERAL, True, Decimal("35"), DiscountType.PERCENTAGE
+    )
+    carrefour_promotion = Promotion(
+        "25%", PromotionKind.GENERAL, True, Decimal("25"), DiscountType.PERCENTAGE
+    )
+    coto = observation("31200", retailer="Coto", product_id="co", promotions=(coto_promotion,))
+    carrefour = observation(
+        "36839.25",
+        retailer="Carrefour",
+        product_id="ca",
+        context=MARKET,
+        promotions=(carrefour_promotion,),
+    )
+    jumbo = observation("49500", retailer="Jumbo", product_id="ju")
+    save(repository, coto, carrefour, jumbo)
+
+    alert = AlertEngine(repository).evaluate_product(PRODUCT, (coto, carrefour, jumbo))
+
+    assert alert is not None
+    assert [offer.observation.retailer for offer in alert.offers] == [
+        "Coto",
+        "Carrefour",
+        "Jumbo",
+    ]
+    assert alert.best_offer.observation is coto
+    assert alert.savings_amount == Decimal("5639.25")
+    assert AlertType.PROMOTION in alert.offers[0].alert_types
+    assert AlertType.PROMOTION in alert.offers[1].alert_types
+    assert alert.offers[2].alert_types == frozenset()
+    assert AlertType.CROSS_RETAILER_DEAL in alert.offers[0].alert_types
+    message = format_alert(alert)
+    assert message.count("Johnnie Walker Black Label 12 Years 750 ml") == 1
+    assert "🏆 <b>Mejor precio</b>\nCoto: $31.200" in message
+    assert "Carrefour — Market Juramento: $36.839,25" in message
+    assert "Jumbo: $49.500" in message
+    assert "Ahorrás $5.639,25 vs. Carrefour — Market Juramento" in message
+    assert message.count("🔗") == 3
+    for raw in ("seller_id", "region_id", "store=", "generic"):
+        assert raw not in message
+
+
+def test_product_alert_historical_signals_stay_with_their_offer(
+    repository: SQLiteRepository,
+) -> None:
+    coto_before = observation("50000", retailer="Coto", product_id="co")
+    carrefour_before = observation("60000", retailer="Carrefour", product_id="ca")
+    save(repository, coto_before, carrefour_before)
+    coto = observation("49000", at=NOW + timedelta(hours=1), retailer="Coto", product_id="co")
+    carrefour = observation(
+        "50000", at=NOW + timedelta(hours=1), retailer="Carrefour", product_id="ca"
+    )
+    save(repository, coto, carrefour)
+
+    alert = AlertEngine(repository).evaluate_product(PRODUCT, (coto, carrefour))
+
+    assert alert is not None
+    by_retailer = {offer.observation.retailer: offer for offer in alert.offers}
+    assert by_retailer["Carrefour"].alert_types == {
+        AlertType.PRICE_DROP,
+        AlertType.HISTORICAL_LOW,
+    }
+    assert by_retailer["Coto"].alert_types == {AlertType.HISTORICAL_LOW}
+    message = format_alert(alert)
+    coto_section, carrefour_section = message.split("\n\nCarrefour:")
+    assert "Bajó" not in coto_section
+    assert "Bajó desde $60.000" in carrefour_section
+
+
+def test_product_offer_selection_ignores_unavailable_currency_and_duplicate_listings(
+    repository: SQLiteRepository,
+) -> None:
+    promotion = Promotion(
+        "Sale", PromotionKind.GENERAL, True, Decimal("30"), DiscountType.PERCENTAGE
+    )
+    coto = observation("40000", retailer="Coto", product_id="co", promotions=(promotion,))
+    unavailable = observation(
+        "10000", retailer="Jumbo", product_id="out", in_stock=False, promotions=(promotion,)
+    )
+    usd = observation("10", retailer="Mercado Libre Argentina", product_id="usd", currency="USD")
+    ml_expensive = observation(
+        "48000", retailer="Mercado Libre Argentina", product_id="ml-expensive"
+    )
+    ml_best = observation("45000", retailer="Mercado Libre Argentina", product_id="ml-best")
+    save(repository, coto, unavailable, usd, ml_expensive, ml_best)
+
+    alert = AlertEngine(repository).evaluate_product(
+        PRODUCT, (coto, unavailable, usd, ml_expensive, ml_best)
+    )
+
+    assert alert is not None
+    assert len(alert.current_observations) == 5
+    assert [
+        (offer.observation.retailer, offer.observation.current_price) for offer in alert.offers
+    ] == [
+        ("Coto", Decimal("40000")),
+        ("Mercado Libre Argentina", Decimal("45000")),
+    ]
+
+
+def test_product_fingerprint_tracks_material_state_but_not_timestamps(
+    repository: SQLiteRepository,
+) -> None:
+    promotion = Promotion(
+        "Sale", PromotionKind.GENERAL, True, Decimal("30"), DiscountType.PERCENTAGE
+    )
+    first = observation("40000", retailer="Coto", product_id="co", promotions=(promotion,))
+    comparison = observation("50000", retailer="Jumbo", product_id="ju")
+    save(repository, first, comparison)
+    engine = AlertEngine(repository)
+    initial = engine.evaluate_product(PRODUCT, (first, comparison))
+    assert initial is not None
+    engine.mark_sent(initial)
+
+    later = replace(first, observed_at=NOW + timedelta(hours=1))
+    later_comparison = replace(comparison, observed_at=NOW + timedelta(hours=1))
+    save(repository, later, later_comparison)
+    assert engine.evaluate_product(PRODUCT, (later, later_comparison)) is None
+
+    changed_price = replace(later_comparison, current_price=Decimal("43000"))
+    save(repository, changed_price)
+    changed = engine.evaluate_product(PRODUCT, (later, changed_price))
+    assert changed is not None and changed.fingerprint != initial.fingerprint
+
+
+def test_product_fingerprint_changes_with_best_retailer_promotion_or_composition(
+    repository: SQLiteRepository,
+) -> None:
+    promotion = Promotion(
+        "Sale", PromotionKind.GENERAL, True, Decimal("30"), DiscountType.PERCENTAGE
+    )
+    coto = observation("40000", retailer="Coto", product_id="co", promotions=(promotion,))
+    jumbo = observation("50000", retailer="Jumbo", product_id="ju")
+    save(repository, coto, jumbo)
+    engine = AlertEngine(repository)
+    initial = engine.evaluate_product(PRODUCT, (coto, jumbo))
+    assert initial is not None
+    engine.mark_sent(initial)
+
+    without_promotion = replace(coto, promotions=())
+    save(repository, without_promotion)
+    promotion_disappeared = engine.evaluate_product(PRODUCT, (without_promotion, jumbo))
+    assert promotion_disappeared is not None
+    assert promotion_disappeared.fingerprint != initial.fingerprint
+
+    carrefour = observation("35000", retailer="Carrefour", product_id="ca")
+    save(repository, carrefour)
+    best_changed = engine.evaluate_product(PRODUCT, (coto, jumbo, carrefour))
+    assert best_changed is not None
+    assert best_changed.best_offer.observation.retailer == "Carrefour"
+    engine.mark_sent(best_changed)
+
+    promoted_carrefour = replace(carrefour, promotions=(promotion,))
+    save(repository, promoted_carrefour)
+    promotion_changed = engine.evaluate_product(PRODUCT, (coto, jumbo, promoted_carrefour))
+    assert promotion_changed is not None
+    assert promotion_changed.fingerprint != best_changed.fingerprint
+
+
+def test_product_alert_version_leaves_legacy_pending_event_inert(
+    repository: SQLiteRepository,
+) -> None:
+    promotion = Promotion(
+        "Sale", PromotionKind.GENERAL, True, Decimal("30"), DiscountType.PERCENTAGE
+    )
+    coto = observation("40000", retailer="Coto", product_id="co", promotions=(promotion,))
+    jumbo = observation("50000", retailer="Jumbo", product_id="ju")
+    save(repository, coto, jumbo)
+    repository.record_alert_candidate(
+        fingerprint="legacy-listing-pending",
+        listing=repository.get_latest_canonical_observations(PRODUCT.canonical_id)[0].listing,
+        observed_at=coto.observed_at,
+        context=coto.context,
+        canonical_id=PRODUCT.canonical_id,
+        alert_types=("promotion",),
+        price=coto.current_price,
+        currency=coto.currency,
+    )
+
+    alert = AlertEngine(repository).evaluate_product(PRODUCT, (coto, jumbo))
+
+    assert alert is not None and alert.model_version == 2
+    rows = repository.connection.execute(
+        "SELECT fingerprint, model_version, status FROM alert_events ORDER BY model_version"
+    ).fetchall()
+    assert [(row["model_version"], row["status"]) for row in rows] == [
+        (1, "pending"),
+        (2, "pending"),
+    ]
+    AlertEngine(repository).mark_sent(alert)
+    legacy = repository.connection.execute(
+        "SELECT status FROM alert_events WHERE fingerprint = 'legacy-listing-pending'"
+    ).fetchone()
+    assert legacy["status"] == "pending"
+
+
+def test_product_alert_refuses_stale_conflicting_expression_membership(
+    repository: SQLiteRepository,
+) -> None:
+    stale_apple = replace(PRODUCT, brand="jack daniels", expression="tennessee apple")
+    fire = replace(
+        observation("40000", retailer="Carrefour", product_id="fire"),
+        title="Whisky Jack Daniels tennesse fire 750 ml",
+        brand="Jack Daniels",
+        promotions=(
+            Promotion(
+                "Sale",
+                PromotionKind.GENERAL,
+                True,
+                Decimal("30"),
+                DiscountType.PERCENTAGE,
+            ),
+        ),
+    )
+    apple = replace(
+        observation("45000", retailer="Coto", product_id="apple"),
+        title="Whisky Jack Daniels Tennessee Apple 750 ml",
+        brand="Jack Daniels",
+    )
+    save(repository, fire, apple)
+
+    alert = AlertEngine(repository).evaluate_product(stale_apple, (fire, apple))
+
+    assert alert is None

@@ -3,12 +3,75 @@
 from decimal import Decimal, InvalidOperation
 from html import escape
 
-from whisky_tracker.alerts.models import Alert, AlertType, PromotionEvidence
+from whisky_tracker.alerts.models import (
+    Alert,
+    AlertType,
+    ProductAlert,
+    ProductOffer,
+    PromotionEvidence,
+)
 from whisky_tracker.display import display_product_name, display_retailer, retailer_link_label
 from whisky_tracker.models.promotion import Promotion, PromotionKind
 
 
-def format_alert(alert: Alert) -> str:
+def format_alert(alert: Alert | ProductAlert) -> str:
+    if isinstance(alert, ProductAlert):
+        return _format_product_alert(alert)
+    return _format_listing_alert(alert)
+
+
+def _format_product_alert(alert: ProductAlert) -> str:
+    sample = alert.best_offer.observation
+    lines = [
+        "🔥 <b>Whisky Tracker</b>",
+        "",
+        f"<b>{escape(display_product_name(alert.canonical_product, sample))}</b>",
+        "",
+        "🏆 <b>Mejor precio</b>",
+    ]
+    for index, offer in enumerate(alert.offers):
+        if index:
+            lines.append("")
+        observation = offer.observation
+        retailer = display_retailer(observation.retailer, observation.context)
+        price = _price(observation.current_price, observation.currency)
+        lines.append(f"{escape(retailer)}: {price}")
+        if AlertType.PRICE_DROP in offer.alert_types and offer.previous_price is not None:
+            detail = f"📉 Bajó desde {_price(offer.previous_price, observation.currency)}"
+            if offer.percentage_change is not None:
+                detail += f" ({_percentage(abs(offer.percentage_change))})"
+            lines.append(detail)
+        if AlertType.HISTORICAL_LOW in offer.alert_types:
+            lines.append("📉 Nuevo mínimo histórico")
+        lines.extend(_promotion_lines(offer))
+
+    if alert.second_best_offer is not None and alert.savings_amount is not None:
+        comparison = alert.second_best_offer.observation
+        retailer = display_retailer(comparison.retailer, comparison.context)
+        lines.extend(
+            (
+                "",
+                f"💰 Ahorrás {_price(alert.savings_amount, sample.currency)} vs. "
+                f"{escape(retailer)}",
+            )
+        )
+
+    links = []
+    seen_retailers: set[str] = set()
+    for offer in alert.offers:
+        observation = offer.observation
+        if not observation.product_url or observation.retailer in seen_retailers:
+            continue
+        seen_retailers.add(observation.retailer)
+        label = escape(retailer_link_label(observation.retailer))
+        link = escape(observation.product_url, quote=True)
+        links.append(f'🔗 <a href="{link}">{label}</a>')
+    if links:
+        lines.extend(("", *links))
+    return "\n".join(lines)
+
+
+def _format_listing_alert(alert: Alert) -> str:
     observation = alert.observation
     lines = [
         "🔥 <b>Whisky Tracker</b>",
@@ -42,7 +105,7 @@ def format_alert(alert: Alert) -> str:
     return "\n".join(lines)
 
 
-def _promotion_lines(alert: Alert) -> list[str]:
+def _promotion_lines(alert: Alert | ProductOffer) -> list[str]:
     evidence_by_promotion = {
         evidence.promotion: evidence for evidence in alert.qualifying_promotions
     }
@@ -88,7 +151,7 @@ def _discount_promotion(promotion: Promotion, evidence: PromotionEvidence | None
 def _payment_promotion(
     promotion: Promotion,
     evidence: PromotionEvidence | None,
-    alert: Alert,
+    alert: Alert | ProductOffer,
 ) -> list[str]:
     values = _condition_values(promotion)
     installments = values.get("installments")
@@ -100,7 +163,7 @@ def _payment_promotion(
     if (
         evidence is None
         and installments == "1"
-        and installment_price == alert.current_price
+        and installment_price == alert.observation.current_price
         and generic_name
     ):
         return []

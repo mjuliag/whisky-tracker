@@ -46,16 +46,18 @@ def observation(
     price: str = "40000",
     promotion: bool = True,
     context: RetailerContext | None = None,
+    gtin: str = "7790895000997",
+    volume: int = 750,
 ) -> ProductObservation:
     return ProductObservation(
         retailer=retailer,
         retailer_product_id=product_id,
         retailer_sku_id=f"sku-{product_id}",
         catalog_product_id=None,
-        gtin="7790895000997",
-        title="Johnnie Walker Black Label 750 ml",
+        gtin=gtin,
+        title=f"Johnnie Walker Black Label {volume} ml",
         brand="Johnnie Walker",
-        size_value=Decimal(750),
+        size_value=Decimal(volume),
         size_unit="ml",
         pack_count=1,
         currency="ARS",
@@ -169,9 +171,9 @@ def test_happy_path_collects_matches_persists_sends_and_marks(
     assert summary.total_observations == 2
     assert summary.canonical_groups == 1
     assert summary.observations_stored == 2
-    assert len(summary.eligible_alerts) == 2
-    assert len(notifier.messages) == 2
-    assert summary.alerts_sent == 2
+    assert len(summary.eligible_alerts) == 1
+    assert len(notifier.messages) == 1
+    assert summary.alerts_sent == 1
     assert all(repository.is_alert_sent(alert.fingerprint) for alert in summary.eligible_alerts)
 
 
@@ -243,7 +245,12 @@ def test_missing_telegram_succeeds_with_eligible_pending_alert(
 ) -> None:
     service, _ = runner(
         repository,
-        (RetailerCollection("Coto", FakeAdapter([observation("Coto", "co1")])),),
+        (
+            RetailerCollection(
+                "Coto",
+                FakeAdapter([observation("Coto", "co1"), observation("Coto", "co2")]),
+            ),
+        ),
     )
     summary = run(service.run())
     assert len(summary.eligible_alerts) == 1
@@ -257,16 +264,19 @@ def test_one_telegram_failure_does_not_stop_later_alerts(
     repository: SQLiteRepository,
 ) -> None:
     notifier = FakeNotifier(failures={0})
+    products = []
+    for index in range(2):
+        gtin = f"77908950009{index:02d}"
+        volume = 700 + index
+        products.extend(
+            (
+                observation("Coto", f"co-{index}", gtin=gtin, volume=volume),
+                observation("Carrefour", f"ca-{index}", gtin=gtin, volume=volume),
+            )
+        )
     service, _ = runner(
         repository,
-        (
-            RetailerCollection(
-                "Coto",
-                FakeAdapter(
-                    [observation("Coto", "one"), observation("Coto", "two", price="41000")]
-                ),
-            ),
-        ),
+        (RetailerCollection("Mixed", FakeAdapter(products)),),
         notifier=notifier,
     )
     summary = run(service.run())
@@ -281,12 +291,17 @@ def test_dry_run_persists_but_never_sends_or_marks(repository: SQLiteRepository)
     notifier = FakeNotifier()
     service, _ = runner(
         repository,
-        (RetailerCollection("Coto", FakeAdapter([observation("Coto", "co1")])),),
+        (
+            RetailerCollection(
+                "Coto",
+                FakeAdapter([observation("Coto", "co1"), observation("Coto", "co2")]),
+            ),
+        ),
         notifier=notifier,
     )
     summary = run(service.run(dry_run=True))
     assert summary.dry_run is True
-    assert summary.observations_stored == 1
+    assert summary.observations_stored == 2
     assert notifier.messages == []
     assert summary.alerts_pending == 1
     assert not repository.is_alert_sent(summary.eligible_alerts[0].fingerprint)
@@ -297,7 +312,16 @@ def test_default_notification_cap_sends_ten_and_defers_remaining(
     repository: SQLiteRepository,
 ) -> None:
     notifier = FakeNotifier()
-    items = [observation("Coto", f"item-{index}") for index in range(12)]
+    items = [
+        observation(
+            retailer,
+            f"item-{index}-{retailer}",
+            gtin=f"7790895001{index:03d}",
+            volume=700 + index,
+        )
+        for index in range(12)
+        for retailer in ("Coto", "Carrefour")
+    ]
     service, _ = runner(
         repository,
         (RetailerCollection("Coto", FakeAdapter(items)),),
@@ -315,7 +339,16 @@ def test_default_notification_cap_sends_ten_and_defers_remaining(
 
 def test_notification_cap_is_configurable(repository: SQLiteRepository) -> None:
     notifier = FakeNotifier()
-    items = [observation("Coto", f"item-{index}") for index in range(4)]
+    items = [
+        observation(
+            retailer,
+            f"item-{index}-{retailer}",
+            gtin=f"7790895002{index:03d}",
+            volume=700 + index,
+        )
+        for index in range(4)
+        for retailer in ("Coto", "Carrefour")
+    ]
     service, _ = runner(
         repository,
         (RetailerCollection("Coto", FakeAdapter(items)),),
@@ -487,7 +520,7 @@ def test_end_to_end_preserves_three_resolved_retailer_contexts(
     summary = run(service.run(dry_run=True))
     assert summary.canonical_groups == 1
     assert summary.observations_stored == 3
-    assert len(summary.eligible_alerts) == 3
+    assert len(summary.eligible_alerts) == 1
     canonical_id = repository.connection.execute(
         "SELECT canonical_id FROM canonical_products"
     ).fetchone()[0]
@@ -548,7 +581,11 @@ def test_transient_runner_coordinates_never_reach_observations_state_alerts_or_s
     for exact_coordinate in ("12.345678", "-45.678912"):
         assert exact_coordinate not in rendered
         assert exact_coordinate not in database_dump
-    assert all(alert.observation.context.coordinates is None for alert in summary.eligible_alerts)
+    assert all(
+        offer.observation.context.coordinates is None
+        for alert in summary.eligible_alerts
+        for offer in alert.offers
+    )
     rows = repository.connection.execute("SELECT longitude, latitude FROM observations").fetchall()
     assert rows and all(row["longitude"] is None and row["latitude"] is None for row in rows)
 

@@ -6,6 +6,8 @@ from whisky_tracker.alerts.models import (
     AlertConfig,
     AlertType,
     ComparisonPrice,
+    ProductAlert,
+    ProductOffer,
     PromotionEvidence,
 )
 from whisky_tracker.alerts.ranking import alert_priority_key
@@ -17,6 +19,8 @@ __all__ = [
     "AlertEngine",
     "AlertType",
     "ComparisonPrice",
+    "ProductAlert",
+    "ProductOffer",
     "PromotionEvidence",
     "alert_priority_key",
     "format_alert",

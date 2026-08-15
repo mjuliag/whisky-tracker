@@ -51,7 +51,13 @@ def display_product_name(product: CanonicalProduct | None, observation: ProductO
         or derive_expression(observation.title, normalize_brand(observation.brand))
     )
     expression_key = _remove_redundant_expression(brand_key, expression_key)
-    expression = display_expression(expression_key)
+    if expression_key is None:
+        expression_key = _remove_redundant_expression(
+            brand_key,
+            extract_known_expression(observation.title)
+            or derive_expression(observation.title, normalize_brand(observation.brand)),
+        )
+    expression = _display_product_expression(brand_key, expression_key)
     age = (
         product.age_statement
         if product and product.age_statement is not None
@@ -89,6 +95,14 @@ def display_expression(value: str | None) -> str | None:
     if normalized in _EXPRESSIONS:
         return _EXPRESSIONS[normalized]
     return _human_case(normalized)
+
+
+def _display_product_expression(brand: str | None, expression: str | None) -> str | None:
+    normalized_brand = normalize_text(brand or "")
+    normalized_expression = normalize_text(expression or "")
+    if normalized_brand == "chivas regal" and normalized_expression in {"xv", "xv clear"}:
+        return "XV"
+    return display_expression(expression)
 
 
 def _remove_redundant_expression(brand: str | None, expression: str | None) -> str | None:

@@ -261,6 +261,7 @@ class SQLiteRepository:
         alert_types: tuple[str, ...],
         price: Decimal,
         currency: str,
+        model_version: int = 1,
     ) -> None:
         """Record an eligible candidate without marking notification delivery successful."""
         self._require_schema()
@@ -282,8 +283,9 @@ class SQLiteRepository:
                 self.connection.execute(
                     """INSERT INTO alert_events(
                            fingerprint, canonical_product_id, listing_id, observation_id,
-                           context_key, alert_types, price, currency, status, generated_at
-                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+                           context_key, alert_types, price, currency, status, generated_at,
+                           model_version
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
                        ON CONFLICT(fingerprint) DO NOTHING""",
                     (
                         fingerprint,
@@ -295,16 +297,23 @@ class SQLiteRepository:
                         str(price),
                         currency,
                         _timestamp(datetime.now(UTC)),
+                        model_version,
                     ),
                 )
         except sqlite3.Error as exc:
             raise PersistenceError(f"alert candidate was not recorded: {exc}") from exc
 
-    def is_alert_sent(self, fingerprint: str) -> bool:
+    def is_alert_sent(self, fingerprint: str, *, model_version: int | None = None) -> bool:
         self._require_schema()
-        row = self.connection.execute(
-            "SELECT status FROM alert_events WHERE fingerprint = ?", (fingerprint,)
-        ).fetchone()
+        if model_version is None:
+            row = self.connection.execute(
+                "SELECT status FROM alert_events WHERE fingerprint = ?", (fingerprint,)
+            ).fetchone()
+        else:
+            row = self.connection.execute(
+                "SELECT status FROM alert_events WHERE fingerprint = ? AND model_version = ?",
+                (fingerprint, model_version),
+            ).fetchone()
         return bool(row and row["status"] == "sent")
 
     def mark_alert_sent(self, fingerprint: str, *, sent_at: datetime | None = None) -> None:

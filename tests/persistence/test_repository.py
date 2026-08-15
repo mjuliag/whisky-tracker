@@ -107,11 +107,11 @@ def test_initialization_is_repeatable_and_versioned(tmp_path: Path) -> None:
     with SQLiteRepository(path) as repository:
         repository.initialize()
         repository.initialize()
-        assert repository.schema_version == 2
+        assert repository.schema_version == 3
         versions = repository.connection.execute("SELECT COUNT(*) FROM schema_version").fetchone()[
             0
         ]
-        assert versions == 2
+        assert versions == 3
     assert path.exists()
 
 
@@ -126,12 +126,49 @@ def test_migrates_existing_version_one_database(tmp_path: Path) -> None:
         )
         repository.connection.commit()
         repository.initialize()
-        assert repository.schema_version == 2
+        assert repository.schema_version == 3
         columns = {
             row["name"]
             for row in repository.connection.execute("PRAGMA table_info(retailer_listings)")
         }
         assert {"volume_ml", "pack_count"} <= columns
+
+
+def test_version_two_alert_history_is_preserved_as_legacy_model(tmp_path: Path) -> None:
+    from whisky_tracker.persistence.schema import MIGRATIONS
+
+    with SQLiteRepository(tmp_path / "version-two.db") as repository:
+        repository.connection.executescript(MIGRATIONS[0])
+        repository.connection.executescript(MIGRATIONS[1])
+        repository.connection.executemany(
+            "INSERT INTO schema_version(version, applied_at) VALUES (?, ?)",
+            ((1, NOW.isoformat()), (2, NOW.isoformat())),
+        )
+        cursor = repository.connection.execute(
+            """INSERT INTO retailer_listings(
+                   retailer, retailer_product_id, retailer_sku_id, title, product_url,
+                   created_at, updated_at, volume_ml, pack_count
+               ) VALUES ('Coto', 'legacy', 'legacy-sku', 'Legacy whisky',
+                         'https://example.test/legacy', ?, ?, 750, 1)""",
+            (NOW.isoformat(), NOW.isoformat()),
+        )
+        repository.connection.execute(
+            """INSERT INTO alert_events(
+                   fingerprint, listing_id, context_key, alert_types, price, currency,
+                   status, generated_at, sent_at
+               ) VALUES ('legacy-sent', ?, 'legacy-context', '["promotion"]', '40000',
+                         'ARS', 'sent', ?, ?)""",
+            (cursor.lastrowid, NOW.isoformat(), NOW.isoformat()),
+        )
+        repository.connection.commit()
+
+        repository.initialize()
+
+        row = repository.connection.execute(
+            "SELECT model_version, status FROM alert_events WHERE fingerprint = 'legacy-sent'"
+        ).fetchone()
+        assert repository.schema_version == 3
+        assert (row["model_version"], row["status"]) == (1, "sent")
 
 
 def test_canonical_upsert_deduplicates_and_enriches(repository: SQLiteRepository) -> None:

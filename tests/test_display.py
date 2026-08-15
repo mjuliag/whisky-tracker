@@ -81,6 +81,46 @@ def test_display_removes_reordered_or_repeated_brand_tokens() -> None:
     assert display_product_name(product, item) == "Chivas Regal Extra 700 ml"
 
 
+def test_chivas_regal_xv_display_removes_scoped_catalog_noise() -> None:
+    item = observation("Whisky Xv Clear Chivas Regal 700 Ml", "Chivas Regal")
+    product = CanonicalProduct(
+        "chivas-xv",
+        "chivas regal",
+        "xv clear chivas",
+        15,
+        700,
+        1,
+        frozenset(("5000299622049",)),
+    )
+
+    assert display_product_name(product, item) == "Chivas Regal XV 15 Years 700 ml"
+
+
+def test_chivas_regal_xv_uses_listing_expression_when_canonical_only_repeats_brand() -> None:
+    item = observation("Whisky Xv Clear Chivas Regal 700 Ml", "Chivas Regal")
+    product = CanonicalProduct(
+        "chivas-xv", "chivas regal", "chivas", 15, 700, 1, frozenset(("5000299622049",))
+    )
+
+    assert display_product_name(product, item) == "Chivas Regal XV 15 Years 700 ml"
+
+
+def test_chivas_regal_xv_roman_numeral_is_consistently_formatted() -> None:
+    item = observation("Whisky Chivas Regal XV 15 Years 700 Ml", "Chivas Regal")
+
+    for expression in ("xv", "Xv", "XV"):
+        product = CanonicalProduct(
+            "chivas-xv",
+            "chivas regal",
+            expression,
+            15,
+            700,
+            1,
+            frozenset(("5000299622049",)),
+        )
+        assert display_product_name(product, item) == "Chivas Regal XV 15 Years 700 ml"
+
+
 def test_singleton_age_statement_is_displayed() -> None:
     item = observation("Whisky 12 Años Singleton Bot 700 Ml", "Singleton")
     product = CanonicalProduct("singleton-12", "singleton", None, 12, 700, 1, frozenset())

@@ -121,23 +121,17 @@ class WhiskyTrackerRunner:
         stored = self.repository.observation_count() - before
         logger.info("Persistence completed with %d new observation rows", stored)
 
-        canonical_by_observation: dict[int, CanonicalProduct] = {}
+        current_by_canonical: dict[str, tuple[CanonicalProduct, list[ProductObservation]]] = {}
         for group in matching_result.groups:
             persisted_product = self.repository.resolve_canonical_product(group.canonical_product)
-            for observation in group.observations:
-                canonical_by_observation[id(observation)] = persisted_product
+            entry = current_by_canonical.setdefault(
+                persisted_product.canonical_id, (persisted_product, [])
+            )
+            entry[1].extend(group.observations)
         eligible = []
-        for observation in sorted(
-            observations,
-            key=lambda item: (
-                item.observed_at,
-                item.retailer,
-                item.retailer_product_id,
-                item.retailer_sku_id,
-            ),
-        ):
-            alert = self.alert_engine.evaluate_observation(
-                observation, canonical_product=canonical_by_observation.get(id(observation))
+        for canonical_product, current_observations in current_by_canonical.values():
+            alert = self.alert_engine.evaluate_product(
+                canonical_product, tuple(current_observations)
             )
             if alert is not None:
                 eligible.append(alert)

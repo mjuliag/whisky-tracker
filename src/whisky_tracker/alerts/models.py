@@ -64,3 +64,35 @@ class Alert:
     qualifying_promotions: tuple[PromotionEvidence, ...]
     reason: str
     fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class ProductOffer:
+    """One retailer's selected current offer and its retailer-local signals."""
+
+    observation: ProductObservation
+    alert_types: frozenset[AlertType]
+    previous_price: Decimal | None
+    historical_minimum: Decimal | None
+    price_change: Decimal | None
+    percentage_change: Decimal | None
+    qualifying_promotions: tuple[PromotionEvidence, ...]
+    reasons: tuple[str, ...]
+    is_best_price: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ProductAlert:
+    """One canonical whisky with price-ordered retailer offers."""
+
+    canonical_product: CanonicalProduct
+    current_observations: tuple[ProductObservation, ...]
+    offers: tuple[ProductOffer, ...]
+    alert_types: frozenset[AlertType]
+    best_offer: ProductOffer
+    second_best_offer: ProductOffer | None
+    savings_amount: Decimal | None
+    savings_percentage: Decimal | None
+    reason: str
+    fingerprint: str
+    model_version: int = 2

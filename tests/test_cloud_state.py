@@ -28,7 +28,7 @@ def test_valid_state_reports_integrity_and_schema(tmp_path: Path) -> None:
     result = validate_sqlite_state(path)
     assert result.exists is True
     assert result.integrity == "ok"
-    assert result.schema_version == 2
+    assert result.schema_version == 3
 
 
 def test_corrupt_state_is_rejected(tmp_path: Path) -> None:
