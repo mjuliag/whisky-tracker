@@ -17,9 +17,12 @@ python -m whisky_tracker run --dry-run
 python -m whisky_tracker run --dry-run --retailer coto --retailer jumbo
 ```
 
-Carrefour is skipped unless `CARREFOUR_POSTAL_CODE` is configured. Mercado Libre is optional and
-is skipped unless its access token is configured. Coto uses its explicit default Digital branch,
-while Jumbo remains labeled as generic context.
+Configure `USER_LATITUDE` and `USER_LONGITUDE` together to resolve the real delivery context for
+Coto and Jumbo. `USER_POSTAL_CODE` is optional and is also used by Carrefour; the legacy
+`CARREFOUR_POSTAL_CODE` remains a fallback. The normal runner skips Coto and Jumbo when coordinates
+are absent rather than mixing generic prices into location-aware history. Their adapters still
+support an explicit no-context generic call for isolated developer debugging. Mercado Libre is
+optional and is skipped unless its access token is configured.
 
 ## GitHub Actions deployment
 
@@ -31,12 +34,16 @@ Configure these repository **Secrets** under Settings → Secrets and variables 
 
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
+- eventually `USER_LATITUDE` and `USER_LONGITUDE` for location-aware cloud runs; the workflow must
+  map these Secrets into its environment before cloud resolution is enabled
 - optionally `MERCADOLIBRE_ACCESS_TOKEN`, `MERCADOLIBRE_REFRESH_TOKEN`,
   `MERCADOLIBRE_CLIENT_ID`, and `MERCADOLIBRE_CLIENT_SECRET`
 
 Configure these non-secret repository **Variables**:
 
 - `CARREFOUR_POSTAL_CODE` (recommended: `1428` for the intended Market Juramento context)
+- optionally `USER_POSTAL_CODE`; unlike exact coordinates, a broad postcode is normally suitable
+  for a repository Variable
 - `NOTIFICATIONS_ENABLED`: leave unset or set to anything other than `true` while validating;
   set exactly `true` to enable notifications on scheduled runs
 - optionally `MAX_NOTIFICATIONS_PER_RUN` and the three `MINIMUM_*_PERCENTAGE` thresholds
@@ -52,6 +59,15 @@ single Actions concurrency group prevent state rollback by overlapping runs. Eac
 also uploads a 30-day recovery artifact. Do not manually edit the state branch. In a public
 repository its database contents are public; they contain price/listing history but should never
 contain configured tokens.
+
+Exact coordinates can reveal a home or frequently used delivery location. Store them as GitHub
+Actions Secrets even though they are not authentication credentials: Secrets mask accidental log
+output and are not readable by ordinary repository viewers, while Variables are intended for
+non-sensitive configuration. Repository administrators and workflows permitted to use the Secrets
+still have access while the workflow runs. Coordinates are used only for retailer resolution;
+resolved observations retain seller/branch/region context without coordinates, and persistence
+rejects any observation that still contains transient coordinates. Public state snapshots therefore
+contain derived commercial context rather than the exact location input.
 
 Every restore and publication runs SQLite integrity validation. Once the state branch exists, a
 restore/network failure stops the job rather than silently initializing an empty database. Run

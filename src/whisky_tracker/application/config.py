@@ -20,6 +20,9 @@ class AppConfig:
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
     carrefour_postal_code: str | None = None
+    user_latitude: float | None = None
+    user_longitude: float | None = None
+    user_postal_code: str | None = None
     mercadolibre_access_token: str | None = None
     mercadolibre_refresh_token: str | None = None
     mercadolibre_client_id: str | None = None
@@ -36,6 +39,13 @@ class AppConfig:
     def mercadolibre_enabled(self) -> bool:
         return bool(self.mercadolibre_access_token)
 
+    @property
+    def user_coordinates(self) -> tuple[float, float] | None:
+        """Return longitude/latitude in RetailerContext order."""
+        if self.user_latitude is None or self.user_longitude is None:
+            return None
+        return (self.user_longitude, self.user_latitude)
+
 
 def load_config(
     *,
@@ -49,11 +59,19 @@ def load_config(
     postcode = _optional(values, "CARREFOUR_POSTAL_CODE") or _optional(
         values, "WHISKY_TRACKER_CARREFOUR_POSTAL_CODE"
     )
+    latitude = _coordinate(values, "USER_LATITUDE", minimum=-90, maximum=90)
+    longitude = _coordinate(values, "USER_LONGITUDE", minimum=-180, maximum=180)
+    if (latitude is None) != (longitude is None):
+        raise ConfigurationError("USER_LATITUDE and USER_LONGITUDE must be configured together")
+    user_postcode = _optional(values, "USER_POSTAL_CODE")
     return AppConfig(
         database_path=Path(database) if database else DEFAULT_DATABASE_PATH,
         telegram_bot_token=_optional(values, "TELEGRAM_BOT_TOKEN"),
         telegram_chat_id=_optional(values, "TELEGRAM_CHAT_ID"),
-        carrefour_postal_code=postcode,
+        carrefour_postal_code=user_postcode or postcode,
+        user_latitude=latitude,
+        user_longitude=longitude,
+        user_postal_code=user_postcode,
         mercadolibre_access_token=_optional(values, "MERCADOLIBRE_ACCESS_TOKEN"),
         mercadolibre_refresh_token=_optional(values, "MERCADOLIBRE_REFRESH_TOKEN"),
         mercadolibre_client_id=_optional(values, "MERCADOLIBRE_CLIENT_ID"),
@@ -121,4 +139,19 @@ def _positive_int(values: Mapping[str, str], key: str, default: int) -> int:
         raise ConfigurationError(f"{key} must be a positive integer") from exc
     if parsed < 1:
         raise ConfigurationError(f"{key} must be a positive integer")
+    return parsed
+
+
+def _coordinate(
+    values: Mapping[str, str], key: str, *, minimum: float, maximum: float
+) -> float | None:
+    value = _optional(values, key)
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise ConfigurationError(f"{key} must be a decimal coordinate") from exc
+    if not minimum <= parsed <= maximum:
+        raise ConfigurationError(f"{key} must be between {minimum:g} and {maximum:g}")
     return parsed

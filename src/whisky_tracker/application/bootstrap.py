@@ -57,13 +57,43 @@ def build_runtime(
                 RetailerCollection("Carrefour", None, skip_reason="postcode_not_configured")
             )
     if "coto" in selected:
-        adapter = CotoAdapter()
-        closeables.append(adapter)
-        collections.append(RetailerCollection("Coto", adapter, adapter.default_context()))
+        if config.user_coordinates:
+            adapter = CotoAdapter()
+            closeables.append(adapter)
+            collections.append(
+                RetailerCollection(
+                    "Coto",
+                    adapter,
+                    RetailerContext(
+                        fulfillment_mode=FulfillmentMode.DELIVERY,
+                        postal_code=config.user_postal_code,
+                        coordinates=config.user_coordinates,
+                    ),
+                )
+            )
+        else:
+            collections.append(
+                RetailerCollection("Coto", None, skip_reason="coordinates_not_configured")
+            )
     if "jumbo" in selected:
-        adapter = JumboAdapter()
-        closeables.append(adapter)
-        collections.append(RetailerCollection("Jumbo", adapter, RetailerContext()))
+        if config.user_coordinates:
+            adapter = JumboAdapter()
+            closeables.append(adapter)
+            collections.append(
+                RetailerCollection(
+                    "Jumbo",
+                    adapter,
+                    RetailerContext(
+                        fulfillment_mode=FulfillmentMode.DELIVERY,
+                        postal_code=config.user_postal_code,
+                        coordinates=config.user_coordinates,
+                    ),
+                )
+            )
+        else:
+            collections.append(
+                RetailerCollection("Jumbo", None, skip_reason="coordinates_not_configured")
+            )
     if "mercadolibre" in selected:
         if config.mercadolibre_enabled:
             adapter = MercadoLibreAdapter(

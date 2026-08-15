@@ -28,3 +28,13 @@ def test_postcode_resolved_context_requires_commercial_identifiers() -> None:
             postal_code="1428",
             context_resolution=ContextResolution.POSTCODE_RESOLVED,
         )
+
+
+def test_address_resolved_commercial_context_cannot_retain_transient_coordinates() -> None:
+    with pytest.raises(ValueError, match="must not retain coordinates"):
+        RetailerContext(
+            fulfillment_mode=FulfillmentMode.DELIVERY,
+            coordinates=(12.345678, -45.678912),
+            store_id="resolved-store",
+            context_resolution=ContextResolution.ADDRESS_RESOLVED,
+        )

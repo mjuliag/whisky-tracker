@@ -46,6 +46,9 @@ class CotoConfig:
     endpoint: str = (
         "https://api.coto.com.ar/api/v1/ms-digital-sitio-bff-web/api/v1/products/search/{query}"
     )
+    coverage_endpoint: str = (
+        "https://www.coto.com.ar/rest/model/atg/actors/cProfileActor/getCobertura"
+    )
     storefront_url: str = "https://www.coto.com.ar/productos/"
     frontend_key: str = "key_r6xzz4IAoTWcipni"
     branch_id: str = "200"
@@ -103,6 +106,11 @@ class CotoAdapter:
         if not query.strip():
             raise ValueError("query must not be blank")
         active_context = context or self.default_context()
+        if active_context.coordinates is not None and (
+            active_context.context_resolution is not ContextResolution.ADDRESS_RESOLVED
+            or not active_context.store_id
+        ):
+            active_context = await self.resolve_delivery_context(active_context)
         if not active_context.store_id:
             raise CotoContextError("Coto retrieval requires a store/branch ID")
 
@@ -128,6 +136,46 @@ class CotoAdapter:
             if self.config.request_delay:
                 await asyncio.sleep(self.config.request_delay)
         return observations
+
+    async def resolve_delivery_context(self, context: RetailerContext) -> RetailerContext:
+        if context.coordinates is None:
+            raise CotoContextError("Coto delivery resolution requires coordinates")
+        longitude, latitude = context.coordinates
+        try:
+            response = await self._get_client().get(
+                self.config.coverage_endpoint,
+                params={"lat": str(latitude), "lng": str(longitude)},
+                headers={"Accept": "application/json", "User-Agent": "WhiskyTracker/0.1"},
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise CotoContextError("Coto coverage resolution request failed") from exc
+        if not isinstance(payload, Mapping):
+            raise CotoContextError("Coto coverage response is invalid")
+        branch = payload.get("sucursal")
+        if not isinstance(branch, Mapping):
+            raise CotoContextError("Coto coverage response has no delivery branch")
+        message = self._text(branch.get("mensajeError"))
+        branch_value = branch.get("idSucursal", branch.get("sucursal"))
+        branch_id = self._text(branch_value)
+        if message not in {None, "-"} or not branch_id:
+            raise CotoContextError("Coto returned no delivery coverage for the location")
+        store_name = next(
+            (
+                value
+                for key in ("nombre", "descripcion", "localidad")
+                if (value := self._text(branch.get(key)))
+            ),
+            None,
+        )
+        return RetailerContext(
+            fulfillment_mode=FulfillmentMode.DELIVERY,
+            postal_code=context.postal_code,
+            store_id=branch_id,
+            store_name=store_name,
+            context_resolution=ContextResolution.ADDRESS_RESOLVED,
+        )
 
     async def _request_page(self, query: str, page: int, branch_id: str) -> Any:
         url = self.config.endpoint.format(query=httpx.URL(query).raw_path.decode())

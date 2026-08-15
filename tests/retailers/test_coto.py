@@ -7,9 +7,15 @@ from urllib.parse import parse_qs
 import httpx
 import pytest
 
-from whisky_tracker.models.context import ContextResolution, FulfillmentMode
+from whisky_tracker.display import display_retailer
+from whisky_tracker.models.context import ContextResolution, FulfillmentMode, RetailerContext
 from whisky_tracker.models.promotion import PromotionKind
-from whisky_tracker.retailers.coto import CotoAdapter, CotoConfig, CotoSchemaError
+from whisky_tracker.retailers.coto import (
+    CotoAdapter,
+    CotoConfig,
+    CotoContextError,
+    CotoSchemaError,
+)
 
 FIXTURE = Path(__file__).parent / "fixtures" / "coto_search.json"
 
@@ -140,3 +146,83 @@ def test_request_uses_branch_filter_and_stable_client_uuid() -> None:
     assert seen[0]["us"] == ["200"]
     assert seen[0]["c"] == ["00000000-0000-0000-0000-000000000001"]
     assert '"value":"200"' in seen[0]["pre_filter_expression"][0]
+
+
+def test_coordinates_resolve_branch_and_use_only_its_price_and_availability() -> None:
+    seen_search = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/getCobertura"):
+            assert request.url.params["lat"] == "-34.0"
+            assert request.url.params["lng"] == "-58.0"
+            return httpx.Response(
+                200,
+                json={
+                    "sucursal": {
+                        "sucursal": "200",
+                        "nombre": "Coto Digital",
+                        "mensajeError": "-",
+                    }
+                },
+            )
+        query = parse_qs(request.url.query.decode())
+        seen_search.append(query)
+        return httpx.Response(200, json=load_fixture())
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = CotoAdapter(
+        client=client,
+        client_uuid="00000000-0000-0000-0000-000000000001",
+        config=CotoConfig(request_delay=0),
+    )
+    requested = RetailerContext(
+        fulfillment_mode=FulfillmentMode.DELIVERY,
+        postal_code="1428",
+        coordinates=(-58.0, -34.0),
+    )
+
+    async def run():
+        async with client:
+            return await adapter.search_products("whisky", context=requested)
+
+    products = asyncio.run(run())
+    product = products[0]
+    assert product.current_price == Decimal("15000.00")
+    assert product.current_price != Decimal("12000")  # Cheaper branch 060 is not substituted.
+    assert product.in_stock is True
+    assert product.context.store_id == "200"
+    assert product.context.store_name == "Coto Digital"
+    assert product.context.context_resolution is ContextResolution.ADDRESS_RESOLVED
+    assert product.context.fulfillment_mode is FulfillmentMode.DELIVERY
+    assert product.context.coordinates is None
+    assert product.context != adapter.default_context()
+    assert display_retailer("Coto", product.context) == "Coto"
+    assert seen_search[0]["us"] == ["200"]
+    assert '"value":"200"' in seen_search[0]["pre_filter_expression"][0]
+    assert all(item.context == product.context for item in products)
+
+
+def test_coverage_failure_has_no_branch_200_or_search_fallback() -> None:
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        return httpx.Response(
+            200,
+            json={"sucursal": {"mensajeError": "Fuera de cobertura"}},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = CotoAdapter(client=client, config=CotoConfig(request_delay=0))
+    requested = RetailerContext(
+        fulfillment_mode=FulfillmentMode.DELIVERY,
+        coordinates=(-58.0, -34.0),
+    )
+
+    async def run() -> None:
+        async with client:
+            with pytest.raises(CotoContextError, match="no delivery coverage"):
+                await adapter.search_products("whisky", context=requested)
+
+    asyncio.run(run())
+    assert paths == ["/rest/model/atg/actors/cProfileActor/getCobertura"]

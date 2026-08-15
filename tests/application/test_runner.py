@@ -9,6 +9,7 @@ import pytest
 from whisky_tracker.alerts import AlertEngine
 from whisky_tracker.application import (
     AppConfig,
+    ConfigurationError,
     RetailerCollection,
     RetailerRunStatus,
     WhiskyTrackerRunner,
@@ -18,6 +19,7 @@ from whisky_tracker.application.bootstrap import build_runtime
 from whisky_tracker.application.formatting import format_run_summary
 from whisky_tracker.matching import ProductMatcher
 from whisky_tracker.models import (
+    ContextResolution,
     DiscountType,
     FulfillmentMode,
     ProductObservation,
@@ -25,7 +27,7 @@ from whisky_tracker.models import (
     PromotionKind,
     RetailerContext,
 )
-from whisky_tracker.persistence import PersistenceError, SQLiteRepository
+from whisky_tracker.persistence import HistoryFilter, PersistenceError, SQLiteRepository
 
 NOW = datetime(2026, 8, 13, 12, tzinfo=UTC)
 PROMOTION = Promotion(
@@ -371,6 +373,184 @@ def test_config_loads_dotenv_with_environment_override_and_thresholds(tmp_path: 
     assert config.telegram_bot_token == "from-environment"
     assert config.carrefour_postal_code == "1428"
     assert config.alert_config.minimum_price_drop_percentage == Decimal("12.5")
+
+
+def test_config_loads_one_exact_user_location_without_logging_or_retailer_coupling(
+    tmp_path: Path,
+) -> None:
+    config = load_config(
+        env_file=tmp_path / "absent.env",
+        environment={
+            "USER_LATITUDE": "-34.0",
+            "USER_LONGITUDE": "-58.0",
+            "USER_POSTAL_CODE": "1428",
+        },
+    )
+    assert config.user_coordinates == (-58.0, -34.0)
+    assert config.user_postal_code == "1428"
+    assert config.carrefour_postal_code == "1428"
+
+
+@pytest.mark.parametrize(
+    "environment",
+    [
+        {"USER_LATITUDE": "-34.0"},
+        {"USER_LONGITUDE": "-58.0"},
+        {"USER_LATITUDE": "91", "USER_LONGITUDE": "-58.0"},
+    ],
+)
+def test_config_rejects_incomplete_or_invalid_coordinates(
+    tmp_path: Path, environment: dict[str, str]
+) -> None:
+    with pytest.raises(ConfigurationError):
+        load_config(env_file=tmp_path / "absent.env", environment=environment)
+
+
+def test_bootstrap_injects_location_and_never_silently_uses_generic_coto_or_jumbo(
+    tmp_path: Path,
+) -> None:
+    runtime = build_runtime(
+        AppConfig(
+            database_path=tmp_path / "located.db",
+            user_latitude=-34.0,
+            user_longitude=-58.0,
+            user_postal_code="1428",
+        ),
+        selected_retailers=frozenset(("coto", "jumbo")),
+    )
+    try:
+        assert all(collection.adapter is not None for collection in runtime.runner.collections)
+        assert all(
+            collection.context
+            == RetailerContext(
+                fulfillment_mode=FulfillmentMode.DELIVERY,
+                postal_code="1428",
+                coordinates=(-58.0, -34.0),
+            )
+            for collection in runtime.runner.collections
+        )
+    finally:
+        run(runtime.close())
+
+    missing = build_runtime(
+        AppConfig(database_path=tmp_path / "missing.db"),
+        selected_retailers=frozenset(("coto", "jumbo")),
+    )
+    try:
+        assert all(collection.adapter is None for collection in missing.runner.collections)
+        assert all(
+            collection.skip_reason == "coordinates_not_configured"
+            for collection in missing.runner.collections
+        )
+    finally:
+        run(missing.close())
+
+
+def test_end_to_end_preserves_three_resolved_retailer_contexts(
+    repository: SQLiteRepository,
+) -> None:
+    carrefour = RetailerContext(
+        fulfillment_mode=FulfillmentMode.SCHEDULED_DELIVERY,
+        postal_code="1428",
+        sales_channel="3",
+        region_id="carrefour-region",
+        seller_id="carrefour-seller",
+        store_name="Market Juramento",
+        context_resolution=ContextResolution.POSTCODE_RESOLVED,
+    )
+    coto = RetailerContext(
+        fulfillment_mode=FulfillmentMode.DELIVERY,
+        postal_code="1428",
+        store_id="coto-branch",
+        context_resolution=ContextResolution.ADDRESS_RESOLVED,
+    )
+    jumbo = RetailerContext(
+        fulfillment_mode=FulfillmentMode.DELIVERY,
+        postal_code="1428",
+        sales_channel="32",
+        region_id="jumbo-region",
+        seller_id="jumbo-seller",
+        store_id="jumbo-store",
+        context_resolution=ContextResolution.ADDRESS_RESOLVED,
+    )
+    service, _ = runner(
+        repository,
+        (
+            RetailerCollection(
+                "Carrefour", FakeAdapter([observation("Carrefour", "cf", context=carrefour)])
+            ),
+            RetailerCollection("Coto", FakeAdapter([observation("Coto", "co", context=coto)])),
+            RetailerCollection("Jumbo", FakeAdapter([observation("Jumbo", "ju", context=jumbo)])),
+            RetailerCollection("Mercado Libre", None, skip_reason="credentials_not_configured"),
+        ),
+    )
+    summary = run(service.run(dry_run=True))
+    assert summary.canonical_groups == 1
+    assert summary.observations_stored == 3
+    assert len(summary.eligible_alerts) == 3
+    canonical_id = repository.connection.execute(
+        "SELECT canonical_id FROM canonical_products"
+    ).fetchone()[0]
+    history = repository.get_price_history(HistoryFilter(canonical_id=canonical_id))
+    assert {item.context for item in history} == {carrefour, coto, jumbo}
+
+
+def test_transient_runner_coordinates_never_reach_observations_state_alerts_or_summary(
+    repository: SQLiteRepository, caplog: pytest.LogCaptureFixture
+) -> None:
+    transient = RetailerContext(
+        fulfillment_mode=FulfillmentMode.DELIVERY,
+        postal_code="test-postcode",
+        coordinates=(12.345678, -45.678912),
+    )
+    coto = RetailerContext(
+        fulfillment_mode=FulfillmentMode.DELIVERY,
+        postal_code="test-postcode",
+        store_id="resolved-coto",
+        context_resolution=ContextResolution.ADDRESS_RESOLVED,
+    )
+    jumbo = RetailerContext(
+        fulfillment_mode=FulfillmentMode.DELIVERY,
+        postal_code="test-postcode",
+        sales_channel="32",
+        seller_id="resolved-seller",
+        store_id="resolved-jumbo",
+        region_id="resolved-region",
+        context_resolution=ContextResolution.ADDRESS_RESOLVED,
+    )
+    service, _ = runner(
+        repository,
+        (
+            RetailerCollection(
+                "Coto",
+                FakeAdapter(
+                    [observation("Coto", "privacy-coto", context=coto)],
+                    expected_context=transient,
+                ),
+                transient,
+            ),
+            RetailerCollection(
+                "Jumbo",
+                FakeAdapter(
+                    [observation("Jumbo", "privacy-jumbo", context=jumbo)],
+                    expected_context=transient,
+                ),
+                transient,
+            ),
+        ),
+    )
+
+    with caplog.at_level(logging.INFO):
+        summary = run(service.run(dry_run=True))
+
+    rendered = caplog.text + format_run_summary(summary, include_alert_messages=True)
+    database_dump = "\n".join(repository.connection.iterdump())
+    for exact_coordinate in ("12.345678", "-45.678912"):
+        assert exact_coordinate not in rendered
+        assert exact_coordinate not in database_dump
+    assert all(alert.observation.context.coordinates is None for alert in summary.eligible_alerts)
+    rows = repository.connection.execute("SELECT longitude, latitude FROM observations").fetchall()
+    assert rows and all(row["longitude"] is None and row["latitude"] is None for row in rows)
 
 
 def test_cloud_database_path_comes_from_environment(tmp_path: Path) -> None:

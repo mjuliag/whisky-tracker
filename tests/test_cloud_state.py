@@ -61,3 +61,10 @@ def test_snapshot_is_independent_and_valid(tmp_path: Path) -> None:
             connection.execute("SELECT 1 FROM sqlite_master WHERE name='after_snapshot'").fetchone()
             is None
         )
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM observations "
+                "WHERE longitude IS NOT NULL OR latitude IS NOT NULL"
+            ).fetchone()[0]
+            == 0
+        )

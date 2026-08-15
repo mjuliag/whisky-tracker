@@ -41,6 +41,11 @@ class RetailerContext:
     def __post_init__(self) -> None:
         if self.coordinates is not None and len(self.coordinates) != 2:
             raise ValueError("coordinates must contain longitude and latitude")
+        if (
+            self.context_resolution is ContextResolution.ADDRESS_RESOLVED
+            and self.coordinates is not None
+        ):
+            raise ValueError("address-resolved commercial contexts must not retain coordinates")
         if self.context_resolution is ContextResolution.POSTCODE_RESOLVED:
             if not self.postal_code:
                 raise ValueError("postcode-resolved contexts require postal_code")

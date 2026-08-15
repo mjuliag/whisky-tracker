@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
@@ -87,3 +88,51 @@ def test_fails_when_postcode_has_no_usable_region(region_payload: object, messag
                 await adapter.search_products("whisky", context=requested_context())
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("gtin", "title"),
+    [
+        ("5000299611104", "Estuche whisky importado Chivas extra 750 cc."),
+        (
+            "5099873017623",
+            "Whisky importado Jack Daniels tennesse apple en botella 750 cc.",
+        ),
+    ],
+)
+def test_discards_carrefour_gtin_when_live_title_has_wrong_750_ml_volume(
+    gtin: str, title: str
+) -> None:
+    product = asyncio.run(_generic_products())[0]
+    conflicting = replace(
+        product,
+        gtin=gtin,
+        title=title,
+        size_value=None,
+        size_unit=None,
+    )
+
+    sanitized = CarrefourAdapter._sanitize_product_identity(conflicting)
+
+    assert sanitized.gtin is None
+    assert sanitized.title == title
+
+
+def test_retains_known_carrefour_gtin_when_volume_is_corrected_to_700_ml() -> None:
+    product = asyncio.run(_generic_products())[0]
+    corrected = replace(
+        product,
+        gtin="5099873017623",
+        title="Whisky Jack Daniels Tennessee Apple 700 ml",
+        size_value=None,
+        size_unit=None,
+    )
+
+    assert CarrefourAdapter._sanitize_product_identity(corrected).gtin == "5099873017623"
+
+
+async def _generic_products() -> list:
+    response = httpx.Response(206, json=FIXTURE, headers={"resources": "0-0/1"})
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda request: response))
+    async with client:
+        return await CarrefourAdapter(client=client).search_products("whisky")

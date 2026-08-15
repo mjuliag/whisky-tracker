@@ -169,6 +169,31 @@ def test_known_conflicting_expression_is_not_merged_by_gtin(
         repository.upsert_canonical_product(product("wrong-identity", expression="blue label"))
 
 
+def test_matching_conflict_reports_sanitized_gtin_and_listing_identities(
+    repository: SQLiteRepository,
+) -> None:
+    repository.upsert_canonical_product(product(volume_ml=700))
+    live_item = replace(
+        observation("live-product"),
+        retailer_sku_id="live-sku",
+        title="Johnnie\nWalker Black Label 750 ml",
+    )
+
+    with pytest.raises(PersistenceError) as error:
+        repository.save_matching_result(
+            MatchingResult((group(product("new-group", volume_ml=750), live_item),), ())
+        )
+
+    message = str(error.value)
+    assert "known GTIN conflicts with persisted canonical volume_ml" in message
+    assert "gtins=['7790895000997']" in message
+    assert "retailer='Carrefour'" in message
+    assert "product_id='live-product'" in message
+    assert "sku_id='live-sku'" in message
+    assert "title='Johnnie Walker Black Label 750 ml'" in message
+    assert "https://" not in message
+
+
 def test_listing_upsert_and_multiple_ml_listings_share_product(
     repository: SQLiteRepository,
 ) -> None:
@@ -268,6 +293,72 @@ def test_contexts_create_separate_price_series(repository: SQLiteRepository) -> 
     assert len(repository.get_price_history(HistoryFilter(listing=key))) == 3
     assert len(repository.get_price_history(HistoryFilter(store_id="juramento"))) == 2
     assert len(repository.get_price_history(HistoryFilter(sales_channel="market"))) == 1
+
+
+def test_transient_coordinates_are_rejected_before_listing_context_or_fingerprint_persistence(
+    repository: SQLiteRepository,
+) -> None:
+    transient = RetailerContext(
+        fulfillment_mode=FulfillmentMode.DELIVERY,
+        postal_code="test-postcode",
+        coordinates=(12.345678, -45.678912),
+    )
+    item = observation(context=transient)
+
+    with pytest.raises(PersistenceError, match="transient location coordinates"):
+        repository.save_observations((item,))
+
+    assert repository.observation_count() == 0
+    listing_count = repository.connection.execute(
+        "SELECT COUNT(*) FROM retailer_listings"
+    ).fetchone()[0]
+    assert listing_count == 0
+    dump = "\n".join(repository.connection.iterdump())
+    assert "12.345678" not in dump
+    assert "-45.678912" not in dump
+
+
+def test_resolved_stores_remain_distinct_without_coordinates(
+    repository: SQLiteRepository,
+) -> None:
+    first_context = RetailerContext(
+        fulfillment_mode=FulfillmentMode.DELIVERY,
+        postal_code="test-postcode",
+        sales_channel="32",
+        seller_id="seller-a",
+        store_id="store-a",
+        region_id="region-a",
+        context_resolution=ContextResolution.ADDRESS_RESOLVED,
+    )
+    second_context = replace(
+        first_context,
+        seller_id="seller-b",
+        store_id="store-b",
+        region_id="region-b",
+    )
+    first = observation(context=first_context)
+    second = replace(first, observed_at=NOW + timedelta(hours=1), context=second_context)
+
+    repository.save_observations((first, second))
+
+    rows = repository.connection.execute(
+        "SELECT longitude, latitude, context_key, seller_id, store_id FROM observations ORDER BY id"
+    ).fetchall()
+    assert all(row["longitude"] is None and row["latitude"] is None for row in rows)
+    assert len({row["context_key"] for row in rows}) == 2
+    assert {(row["seller_id"], row["store_id"]) for row in rows} == {
+        ("seller-a", "store-a"),
+        ("seller-b", "store-b"),
+    }
+    key = ListingKey("Carrefour", "c1", "sku-c1")
+    assert (
+        repository.get_latest_price(HistoryFilter(listing=key, context=first_context)).context
+        == first_context
+    )
+    assert (
+        repository.get_latest_price(HistoryFilter(listing=key, context=second_context)).context
+        == second_context
+    )
 
 
 def test_unmatched_history_survives_later_canonical_association(

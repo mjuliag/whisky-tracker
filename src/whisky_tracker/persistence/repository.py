@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
-from whisky_tracker.matching.models import CanonicalProduct, MatchingResult
+from whisky_tracker.matching.models import CanonicalProduct, MatchingResult, ProductMatchGroup
 from whisky_tracker.matching.normalization import (
     extract_known_expression,
     pack_from_observation,
@@ -112,7 +112,10 @@ class SQLiteRepository:
         try:
             with self.connection:
                 for group in result.groups:
-                    canonical_pk = self._upsert_canonical(group.canonical_product)
+                    try:
+                        canonical_pk = self._upsert_canonical(group.canonical_product)
+                    except ValueError as exc:
+                        raise ValueError(f"{exc}; {_safe_group_identity(group)}") from exc
                     for observation in group.observations:
                         self._save_observation(observation, canonical_pk)
                 for observation in result.unmatched:
@@ -397,10 +400,12 @@ class SQLiteRepository:
         ).fetchone()
 
     def _save_observation(self, observation: ProductObservation, canonical_pk: int | None) -> int:
+        context = observation.context
+        if context.coordinates is not None:
+            raise ValueError("transient location coordinates cannot be persisted")
         listing_pk, associated_canonical = self._upsert_listing(observation, canonical_pk)
         effective_canonical = canonical_pk or associated_canonical
         fingerprint = _snapshot_fingerprint(observation)
-        context = observation.context
         longitude, latitude = context.coordinates or (None, None)
         cursor = self.connection.execute(
             """
@@ -618,6 +623,33 @@ def _timestamp(value: datetime) -> str:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("observation timestamps must be timezone-aware")
     return value.astimezone(UTC).isoformat(timespec="microseconds")
+
+
+def _safe_group_identity(group: ProductMatchGroup) -> str:
+    """Describe product identity without prices, URLs, contexts, or credentials."""
+    product = group.canonical_product
+    canonical = (
+        f"canonical_id={_safe_log_value(product.canonical_id)!r} "
+        f"brand={_safe_log_value(product.brand)!r} "
+        f"expression={_safe_log_value(product.expression)!r} "
+        f"volume_ml={product.volume_ml!r} pack_count={product.pack_count!r} "
+        f"gtins={sorted(product.gtins)!r}"
+    )
+    listings = ", ".join(
+        f"retailer={_safe_log_value(item.retailer)!r} "
+        f"product_id={_safe_log_value(item.retailer_product_id)!r} "
+        f"sku_id={_safe_log_value(item.retailer_sku_id)!r} "
+        f"title={_safe_log_value(item.title)!r}"
+        for item in group.observations
+    )
+    return f"conflicting group: {canonical}; listings=[{listings}]"
+
+
+def _safe_log_value(value: str | None, *, limit: int = 160) -> str | None:
+    if value is None:
+        return None
+    sanitized = " ".join(value.split())
+    return sanitized if len(sanitized) <= limit else f"{sanitized[: limit - 3]}..."
 
 
 def _decimal_text(value: Decimal | None) -> str | None:
