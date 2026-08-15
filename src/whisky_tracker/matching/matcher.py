@@ -167,11 +167,14 @@ class ProductMatcher:
         )
 
     def _fuzzy_supported(self, left: NormalizedObservation, right: NormalizedObservation) -> bool:
+        left_known = extract_known_expression(left.observation.title)
+        right_known = extract_known_expression(right.observation.title)
         if (
             not left.brand
             or left.brand != right.brand
             or not left.expression
             or not right.expression
+            or (left_known and right_known and left_known != right_known)
         ):
             return False
         if left.pack_count is None or left.pack_count != right.pack_count:

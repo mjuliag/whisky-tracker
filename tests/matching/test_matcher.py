@@ -159,6 +159,79 @@ def test_jack_daniels_expressions_remain_distinct() -> None:
     assert confidence(gentleman, old_no_7) is None
 
 
+def test_tennessee_fire_and_apple_live_carrefour_titles_never_match() -> None:
+    fire = observation(
+        "Carrefour",
+        "738116",
+        "Whisky importado Jack Daniels tennesse fire en botella 750 cc.",
+        brand="Jack Daniels",
+    )
+    apple = observation(
+        "Carrefour",
+        "740576",
+        "Whisky importado Jack Daniels tennesse apple en botella 750 cc.",
+        brand="Jack Daniels",
+    )
+    assert confidence(fire, apple) is None
+
+
+def test_equivalent_tennessee_fire_and_apple_spellings_still_match() -> None:
+    fire_live = observation(
+        "Carrefour",
+        "fire-live",
+        "Whisky importado Jack Daniels tennesse fire en botella 750 cc.",
+        brand="Jack Daniels",
+    )
+    fire_standard = observation(
+        "Jumbo",
+        "fire-standard",
+        "Whisky importado Jack Daniels tennessee fire en botella 750 ml",
+        brand="Jack Daniels",
+    )
+    apple_live = observation(
+        "Carrefour",
+        "apple-live",
+        "Whisky importado Jack Daniels tennesse apple en botella 750 cc.",
+        brand="Jack Daniels",
+    )
+    apple_standard = observation(
+        "Jumbo",
+        "apple-standard",
+        "Whisky importado Jack Daniels tennessee apple en botella 750 ml",
+        brand="Jack Daniels",
+    )
+    assert confidence(fire_live, fire_standard) is MatchConfidence.FUZZY_SUPPORTED
+    assert confidence(apple_live, apple_standard) is MatchConfidence.FUZZY_SUPPORTED
+
+
+def test_equivalent_fire_group_cannot_transitively_absorb_apple_variant() -> None:
+    fire_live = observation(
+        "Carrefour",
+        "fire-live",
+        "Whisky importado Jack Daniels tennesse fire en botella 750 cc.",
+        brand="Jack Daniels",
+    )
+    fire_standard = observation(
+        "Jumbo",
+        "fire-standard",
+        "Whisky importado Jack Daniels tennessee fire en botella 750 ml",
+        brand="Jack Daniels",
+    )
+    apple = observation(
+        "Carrefour",
+        "apple",
+        "Whisky importado Jack Daniels tennesse apple en botella 750 cc.",
+        brand="Jack Daniels",
+    )
+    result = ProductMatcher().match((fire_live, fire_standard, apple))
+    assert len(result.groups) == 1
+    assert {item.retailer_product_id for item in result.groups[0].observations} == {
+        "fire-live",
+        "fire-standard",
+    }
+    assert result.unmatched == (apple,)
+
+
 def test_gentleman_jack_exact_gtin_group_retains_canonical_expression() -> None:
     products = (
         observation(

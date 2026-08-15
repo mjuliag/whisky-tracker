@@ -121,7 +121,7 @@ def extract_known_expression(title: str) -> str | None:
         (r"\bsingle barrel\b", "single barrel"),
         (r"\b(?:tennessee|tennesse)? ?honey\b", "tennessee honey"),
         (r"\b(?:tennessee )?apple\b", "tennessee apple"),
-        (r"\b(?:tennessee|tenessee) fire\b", "tennessee fire"),
+        (r"\b(?:tennessee|tennesse|tenessee) fire\b", "tennessee fire"),
         (r"\bdouble black\b", "double black"),
         (r"\bblack label\b", "black label"),
         (r"\bblue label\b", "blue label"),

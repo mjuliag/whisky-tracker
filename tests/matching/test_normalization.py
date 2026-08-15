@@ -3,6 +3,7 @@ import pytest
 from whisky_tracker.identifiers import normalize_gtin
 from whisky_tracker.matching.normalization import (
     extract_age_statement,
+    extract_known_expression,
     extract_pack_count,
     extract_volume_ml,
     normalize_brand,
@@ -51,3 +52,10 @@ def test_text_and_brand_normalization_is_conservative() -> None:
 
 def test_degenerate_gtin_is_rejected() -> None:
     assert normalize_gtin("00000000") is None
+
+
+def test_live_tennesse_fire_spelling_normalizes_to_known_variant() -> None:
+    assert (
+        extract_known_expression("Whisky importado Jack Daniels tennesse fire en botella 750 cc.")
+        == "tennessee fire"
+    )
