@@ -168,7 +168,7 @@ def _payment_promotion(
     ):
         return []
     if evidence:
-        return [f"💳 {_percentage(evidence.discount_percentage)} adicional con medio de pago"]
+        return [f"💳 {_percentage(evidence.discount_percentage)} con medio de pago elegible"]
     if generic_name:
         return []
     return [f"💳 {escape(promotion.name)}"]

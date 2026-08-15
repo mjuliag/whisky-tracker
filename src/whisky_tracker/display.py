@@ -102,6 +102,18 @@ def _display_product_expression(brand: str | None, expression: str | None) -> st
     normalized_expression = normalize_text(expression or "")
     if normalized_brand == "chivas regal" and normalized_expression in {"xv", "xv clear"}:
         return "XV"
+    if normalized_brand == "j b" and normalized_expression in {"blended", "blended scotch"}:
+        return None
+    if normalized_brand == "blenders":
+        if normalized_expression in {"seagram s pride", "pride", "blenders pride"}:
+            return "Pride"
+        if normalized_expression in {
+            "america",
+            "americano",
+            "estilo america",
+            "estilo americano",
+        }:
+            return "Americano"
     return display_expression(expression)
 
 

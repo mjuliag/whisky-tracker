@@ -502,7 +502,9 @@ def test_useful_payment_discount_is_displayed_without_debug_metadata(
     alert = AlertEngine(repository).evaluate_observation(candidate, canonical_product=PRODUCT)
     assert alert is not None
     message = format_alert(alert)
-    assert "💳 15% adicional con medio de pago" in message
+    assert "💳 15% con medio de pago elegible" in message
+    assert "adicional" not in message
+    assert "15%" in message
     assert "image=" not in message and "store=" not in message
 
 

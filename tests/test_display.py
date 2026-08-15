@@ -67,6 +67,43 @@ def test_display_removes_redundant_brand_and_bottle_noise() -> None:
     assert display_product_name(old_parr, item) == "Grand Old Parr 750 ml"
 
 
+def test_jb_display_suppresses_generic_blended_category_wording() -> None:
+    item = observation("Whisky Blended Scotch J&B 750ml", "J&B")
+    product = CanonicalProduct("jb", "j b", "j b", None, 750, 1, frozenset())
+
+    assert display_product_name(product, item) == "J&B 750 ml"
+
+
+def test_blenders_pride_display_suppresses_scoped_brand_lineage_noise() -> None:
+    item = observation("Whisky Seagram's Blenders Pride 200ml", "BLENDERS")
+    product = CanonicalProduct("blenders-pride", None, None, None, 200, 1, frozenset())
+
+    assert display_product_name(product, item) == "Blenders Pride 200 ml"
+
+
+def test_blenders_americano_display_normalizes_live_retailer_wording() -> None:
+    item = observation("Whisky Estilo America BLENDERS Bot 750 Ml", "BLENDERS")
+    product = CanonicalProduct(
+        "blenders-americano", "blenders", "blenders", None, 750, 1, frozenset()
+    )
+
+    assert display_product_name(product, item) == "Blenders Americano 750 ml"
+
+
+def test_scoped_blenders_cleanup_leaves_unrelated_expressions_unchanged() -> None:
+    item = observation("Whisky Golden Blue Blenders 750 ml", "BLENDERS")
+    product = CanonicalProduct(
+        "blenders-golden-blue", "blenders", "golden blue", None, 750, 1, frozenset()
+    )
+
+    assert display_product_name(product, item) == "Blenders Golden Blue 750 ml"
+
+    unrelated = CanonicalProduct(
+        "seagrams-pride", "seagrams", "seagram s pride", None, 750, 1, frozenset()
+    )
+    assert display_product_name(unrelated, item) == "Seagrams Seagram S Pride 750 ml"
+
+
 def test_jack_daniels_flavor_names_are_human_ordered() -> None:
     item = observation("Whisky Honey Jack Daniel 700ml", "JACK DANIELS")
     product = CanonicalProduct("honey", "jack daniels", "honey jack", None, 700, 1, frozenset())
