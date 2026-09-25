@@ -20,6 +20,10 @@ from whisky_tracker.retailers.base import RetailerError
 
 _TRANSIENT_STATUSES = {429, 500, 502, 503, 504}
 _PERCENT_PATTERN = re.compile(r"(?P<value>\d+(?:[.,]\d+)?)\s*%")
+_REGULAR_REFERENCE_PATTERN = re.compile(
+    r"\bprecio\s+(?:regular|contado)\s*:\s*\$?\s*(?P<value>\d[\d.,]*)",
+    re.IGNORECASE,
+)
 _SIZE_PATTERN = re.compile(
     r"(?<!\d)(?P<value>\d+(?:[.,]\d+)?)\s*(?P<unit>ml|cc|cl|l|lt|lts|litros?)\b",
     re.IGNORECASE,
@@ -268,7 +272,9 @@ class CotoAdapter:
         if regular_price is None or regular_price <= 0:
             return None
 
-        promotions, explicit_general_price = self._promotions(data, branch_id=branch_id or "")
+        promotions, explicit_general_price = self._promotions(
+            data, branch_id=branch_id or "", regular_price=regular_price
+        )
         current_price = explicit_general_price or regular_price
         availability = data.get("store_availability")
         if not isinstance(availability, list):
@@ -300,7 +306,7 @@ class CotoAdapter:
         )
 
     def _promotions(
-        self, data: Mapping[str, Any], *, branch_id: str
+        self, data: Mapping[str, Any], *, branch_id: str, regular_price: Decimal
     ) -> tuple[list[Promotion], Decimal | None]:
         promotions: list[Promotion] = []
         applied_prices: list[Decimal] = []
@@ -312,18 +318,27 @@ class CotoAdapter:
         for entry in discounts:
             if not isinstance(entry, Mapping):
                 continue
+            price_reference = self._text(entry.get("regularPriceText"))
+            if price_reference and self._regular_price_reference(price_reference) != regular_price:
+                continue
+            # Coto can include text for another SKU in an otherwise applicable discount.
+            owned_entry = dict(entry)
+            for field in ("comments", "takingText"):
+                value = self._text(entry.get(field))
+                if value and self._mentions_other_regular_price(value, regular_price):
+                    owned_entry[field] = None
             pieces = [
-                self._text(entry.get(key))
+                self._text(owned_entry.get(key))
                 for key in ("discountText", "comments", "takingText", "regularPriceText")
             ]
             combined = " ".join(piece for piece in pieces if piece)
             kind = self._promotion_kind(combined)
-            discounted = self._money(entry.get("discountPrice"))
+            discounted = self._money(owned_entry.get("discountPrice"))
             applied = kind is PromotionKind.GENERAL and discounted is not None
             if applied and discounted is not None:
                 applied_prices.append(discounted)
             percentage = _PERCENT_PATTERN.search(combined)
-            conditions = self._conditions(entry, branch_id=branch_id)
+            conditions = self._conditions(owned_entry, branch_id=branch_id)
             promotions.append(
                 Promotion(
                     name=pieces[0] or pieces[1] or "Descuento Coto",
@@ -363,6 +378,27 @@ class CotoAdapter:
                 )
             )
         return promotions, min(applied_prices) if applied_prices else None
+
+    @classmethod
+    def _regular_price_reference(cls, text: str) -> Decimal | None:
+        match = re.search(r"\$\s*(\d[\d.,]*)", text) or re.search(r"(\d[\d.,]*)", text)
+        if match is None:
+            return None
+        value = match.group(1)
+        if (
+            "." in value
+            and "," not in value
+            and all(len(part) == 3 for part in value.split(".")[1:])
+        ):
+            value = value.replace(".", "")
+        return cls._money(value)
+
+    @classmethod
+    def _mentions_other_regular_price(cls, text: str, regular_price: Decimal) -> bool:
+        return any(
+            cls._regular_price_reference(match.group("value")) != regular_price
+            for match in _REGULAR_REFERENCE_PATTERN.finditer(text)
+        )
 
     @staticmethod
     def _promotion_kind(text: str) -> PromotionKind:

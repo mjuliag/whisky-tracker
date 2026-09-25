@@ -130,7 +130,7 @@ def _promotion_lines(alert: Alert | ProductOffer) -> list[str]:
             lines.append(f"Precio regular: {regular_price}")
             regular_price_shown = True
         lines.extend(_human_conditions(promotion))
-    return lines
+    return list(dict.fromkeys(lines))
 
 
 def _discount_promotion(promotion: Promotion, evidence: PromotionEvidence | None) -> list[str]:
@@ -138,13 +138,15 @@ def _discount_promotion(promotion: Promotion, evidence: PromotionEvidence | None
         percentage = _percentage(evidence.discount_percentage)
         icon = "🥃"
         if promotion.kind is PromotionKind.LOYALTY:
-            return [f"{icon} {percentage} de descuento con {escape(promotion.name)}"]
+            return [f"{icon} {percentage} de descuento con programa de fidelidad"]
         if promotion.kind is PromotionKind.COUPON:
             return [f"{icon} {percentage} de descuento con cupón"]
         return [f"{icon} {percentage} de descuento"]
     name = promotion.name.strip()
     if not name or name.casefold() in {"descuento coto", "promoción"}:
         return []
+    if _internal_promotion_name(name):
+        return ["🥃 Promoción disponible"]
     return [f"🥃 {escape(name)}"]
 
 
@@ -169,9 +171,13 @@ def _payment_promotion(
         return []
     if evidence:
         return [f"💳 {_percentage(evidence.discount_percentage)} con medio de pago elegible"]
-    if generic_name:
+    if generic_name or _internal_promotion_name(promotion.name):
         return []
     return [f"💳 {escape(promotion.name)}"]
+
+
+def _internal_promotion_name(name: str) -> bool:
+    return name.strip().casefold().startswith("promo-")
 
 
 def _human_conditions(promotion: Promotion) -> list[str]:

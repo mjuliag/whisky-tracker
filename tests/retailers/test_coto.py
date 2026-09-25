@@ -1,5 +1,6 @@
 import asyncio
 import json
+from copy import deepcopy
 from decimal import Decimal
 from pathlib import Path
 from urllib.parse import parse_qs
@@ -7,9 +8,12 @@ from urllib.parse import parse_qs
 import httpx
 import pytest
 
+from whisky_tracker.alerts import AlertEngine, format_alert
 from whisky_tracker.display import display_retailer
+from whisky_tracker.matching import CanonicalProduct
 from whisky_tracker.models.context import ContextResolution, FulfillmentMode, RetailerContext
 from whisky_tracker.models.promotion import PromotionKind
+from whisky_tracker.persistence import SQLiteRepository
 from whisky_tracker.retailers.coto import (
     CotoAdapter,
     CotoConfig,
@@ -68,6 +72,116 @@ def test_parses_branch_specific_product_and_promotions() -> None:
     assert payment.kind is PromotionKind.PAYMENT_METHOD
     assert payment.applied_to_current_price is False
     assert "installments=3" in payment.conditions
+
+
+def test_discount_price_reference_keeps_promotions_on_their_exact_listing() -> None:
+    fixture = load_fixture()
+    small = fixture["response"]["results"][0]
+    small["data"]["discounts"].append(
+        {
+            "id": "discount-for-other-volume",
+            "comments": "No acumulable con otras promos",
+            "takingText": "Precio regular: $30.000\nNo acumulable con otras promociones",
+            "discountText": "25%Dto",
+            "discountPrice": "$22500",
+            "regularPriceText": "Precio Contado: $30000",
+        }
+    )
+    products = run_search(lambda _request: httpx.Response(200, json=fixture))
+    selected = products[0]
+
+    assert selected.regular_price == Decimal("20000")
+    assert selected.current_price == Decimal("15000")
+    assert len(selected.promotions) == 2  # Its own discount and payment method.
+    assert all(
+        "30000" not in condition for promo in selected.promotions for condition in promo.conditions
+    )
+
+
+def test_black_label_750_alert_excludes_one_liter_promotion_but_keeps_own_distinct_promos(
+    tmp_path: Path,
+) -> None:
+    fixture = load_fixture()
+    small = fixture["response"]["results"][0]
+    large = deepcopy(small)
+    small["data"].update(
+        id="black-750",
+        sku_id="sku-black-750",
+        sku_display_name="Whisky Johnnie Walker 12 Años 750 Ml Black Label",
+        product_brand="Johnnie Walker",
+        product_main_ean="7790895000997",
+        price=[{"store": "200", "listPrice": 79243}],
+        discounts=[
+            {
+                "discountText": "25%Dto",
+                "discountPrice": "$59432.25",
+                "comments": "No acumulable con otras promos",
+                "takingText": "Precio regular: $94.721\nNo acumulable con otras promociones",
+                "regularPriceText": "Precio Contado: $79243",
+            },
+            {
+                "discountText": "10% Comunidad Coto",
+                "comments": "Sólo socios",
+                "regularPriceText": "Precio Contado: $79.243",
+            },
+            {
+                "discountText": "25%Dto",
+                "discountPrice": "$71040.75",
+                "comments": "No acumulable con otras promos",
+                "takingText": "Precio regular: $94.721\nNo acumulable con otras promociones",
+                "regularPriceText": "Precio Contado: $94721",
+            },
+        ],
+        discounts_payment_methods=[],
+    )
+    large["data"].update(
+        id="black-1000",
+        sku_id="sku-black-1000",
+        sku_display_name="Whisky Johnnie Walker 12 Años 1 L Black Label",
+        product_brand="Johnnie Walker",
+        product_main_ean="5000267107776",
+        price=[{"store": "200", "listPrice": 94721}],
+        discounts=[small["data"]["discounts"][2]],
+        discounts_payment_methods=[],
+    )
+    fixture["response"].update(total_num_results=2, results=[small, large])
+    selected, other = run_search(lambda _request: httpx.Response(200, json=fixture))
+    assert selected.current_price == Decimal("59432.25")
+    assert selected.regular_price == Decimal("79243")
+    assert other.regular_price == Decimal("94721")
+    assert len(selected.promotions) == 2
+    assert len(other.promotions) == 1
+    assert {promo.kind for promo in selected.promotions} == {
+        PromotionKind.GENERAL,
+        PromotionKind.LOYALTY,
+    }
+
+    canonical = CanonicalProduct(
+        "black-label-750",
+        "johnnie walker",
+        "black label",
+        12,
+        750,
+        1,
+        frozenset((selected.gtin,)),
+    )
+    with SQLiteRepository(tmp_path / "coto-alert.db") as repository:
+        repository.initialize()
+        repository.save_observations((selected, other))
+        alert = AlertEngine(repository).evaluate_product(canonical, (selected, other))
+        assert alert is not None
+        assert alert.offers[0].observation is selected
+        assert len(alert.offers[0].qualifying_promotions) == 2
+        message = format_alert(alert)
+
+    assert "<b>Johnnie Walker Black Label 12 Years 750 ml</b>" in message
+    assert "Coto: $59.432,25" in message
+    assert "🥃 25% de descuento" in message
+    assert "🥃 10% de descuento con programa de fidelidad" in message
+    assert "Precio regular: $79.243" in message
+    assert "Sólo socios" in message
+    assert "Precio regular: $94.721" not in message
+    assert "71040" not in message
 
 
 def test_availability_is_for_active_branch_only() -> None:

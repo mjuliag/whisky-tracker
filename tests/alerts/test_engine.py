@@ -509,6 +509,151 @@ def test_useful_payment_discount_is_displayed_without_debug_metadata(
     assert "image=" not in message and "store=" not in message
 
 
+def test_duplicate_payment_conditions_render_once_without_changing_alert(
+    repository: SQLiteRepository,
+) -> None:
+    payments = (
+        Promotion(
+            "Tarjeta Carrefour 15%",
+            PromotionKind.PAYMENT_METHOD,
+            False,
+            Decimal("15"),
+            DiscountType.PERCENTAGE,
+            conditions=("RestrictionsBins=507858", "takingText=Con tarjetas seleccionadas"),
+        ),
+        Promotion(
+            "Medio de pago elegible 15%",
+            PromotionKind.PAYMENT_METHOD,
+            False,
+            Decimal("15"),
+            DiscountType.PERCENTAGE,
+            conditions=("RestrictionsBins=507858", "takingText=Con tarjetas seleccionadas"),
+        ),
+    )
+    item = observation(
+        "44000",
+        promotions=(
+            Promotion(
+                "25% Off",
+                PromotionKind.GENERAL,
+                True,
+                Decimal("25"),
+                DiscountType.PERCENTAGE,
+            ),
+            *payments,
+        ),
+    )
+    save(repository, item)
+    alert = AlertEngine(repository).evaluate_product(PRODUCT, (item,))
+    assert alert is not None
+    before = (alert.fingerprint, alert_priority_key(alert), alert.alert_types, alert.offers)
+    assert len(alert.offers[0].qualifying_promotions) == 3
+    assert (
+        sum(
+            evidence.promotion.kind is PromotionKind.PAYMENT_METHOD
+            for evidence in alert.offers[0].qualifying_promotions
+        )
+        == 2
+    )
+
+    message = format_alert(alert)
+
+    assert message.count("💳 15% con medio de pago elegible") == 1
+    assert message.count("Con tarjetas seleccionadas") == 1
+    assert (alert.fingerprint, alert_priority_key(alert), alert.alert_types, alert.offers) == before
+
+
+def test_internal_carrefour_campaign_name_is_hidden_but_verified_details_remain(
+    repository: SQLiteRepository,
+) -> None:
+    promotion = Promotion(
+        "PROMO-25% Off Mi Crf Max 8 unidades -Reg-1-25-Gigante23 al 1.10",
+        PromotionKind.LOYALTY,
+        True,
+        Decimal("25"),
+        DiscountType.PERCENTAGE,
+        conditions=("takingText=Sólo socios & tarjetas <elegibles>",),
+    )
+    item = observation("65737.50", regular_price="87650", promotions=(promotion,))
+    save(repository, item)
+    alert = AlertEngine(repository).evaluate_product(PRODUCT, (item,))
+    assert alert is not None
+
+    message = format_alert(alert)
+
+    assert "🥃 25% de descuento con programa de fidelidad" in message
+    assert "Precio regular: $87.650" in message
+    assert "Sólo socios &amp; tarjetas &lt;elegibles&gt;" in message
+    assert "PROMO-" not in message
+    assert "Gigante23" not in message
+    assert "<elegibles>" not in message
+
+
+def test_coto_black_label_regular_prices_belong_to_distinct_volumes(
+    repository: SQLiteRepository,
+) -> None:
+    def coto_promotion(regular_price: str) -> Promotion:
+        return Promotion(
+            "35%Dto",
+            PromotionKind.GENERAL,
+            True,
+            Decimal("35"),
+            DiscountType.PERCENTAGE,
+            conditions=(
+                "comments=No acumulable con otras promos",
+                f"regularPriceText=Precio Contado: ${regular_price}",
+            ),
+        )
+
+    small = observation(
+        "51507.95",
+        retailer="Coto",
+        product_id="black-750",
+        volume=750,
+        regular_price="79243",
+        promotions=(coto_promotion("79243"),),
+    )
+    large = observation(
+        "61568.65",
+        retailer="Coto",
+        product_id="black-1000",
+        volume=1000,
+        regular_price="94721",
+        promotions=(coto_promotion("94721"),),
+    )
+    large = replace(large, gtin="5000267107776")
+    large_product = replace(
+        PRODUCT,
+        canonical_id="jw-black-1000",
+        volume_ml=1000,
+        gtins=frozenset(("5000267107776",)),
+    )
+    repository.save_matching_result(
+        MatchingResult(
+            (
+                ProductMatchGroup(PRODUCT, (small,), MatchConfidence.EXACT_GTIN, "test"),
+                ProductMatchGroup(large_product, (large,), MatchConfidence.EXACT_GTIN, "test"),
+            ),
+            (),
+        )
+    )
+    engine = AlertEngine(repository)
+    small_alert = engine.evaluate_product(PRODUCT, (small,))
+    large_alert = engine.evaluate_product(large_product, (large,))
+    assert small_alert is not None and large_alert is not None
+
+    small_message = format_alert(small_alert)
+    large_message = format_alert(large_alert)
+    assert "750 ml" in small_message and "1000 ml" in large_message
+    assert small_message.count("Precio regular: $79.243") == 1
+    assert "Precio regular: $94.721" not in small_message
+    assert large_message.count("Precio regular: $94.721") == 1
+    assert "Precio regular: $79.243" not in large_message
+    assert small_message.count("No acumulable con otras promociones") == 1
+    assert large_message.count("No acumulable con otras promociones") == 1
+    assert small_alert.fingerprint != large_alert.fingerprint
+
+
 def test_formatter_uses_safe_friendly_html_link(repository: SQLiteRepository) -> None:
     item = replace(
         observation("50000", retailer="Coto"),
@@ -520,6 +665,7 @@ def test_formatter_uses_safe_friendly_html_link(repository: SQLiteRepository) ->
         False,
         Decimal("25"),
         DiscountType.PERCENTAGE,
+        conditions=("takingText=Sólo socios <Especial> & amigos",),
     )
     item = replace(item, promotions=(promotion,))
     save(repository, item)
@@ -530,7 +676,8 @@ def test_formatter_uses_safe_friendly_html_link(repository: SQLiteRepository) ->
         '🔗 <a href="https://example.test/item?a=1&amp;name=&quot;rare&quot;">Ver en Coto</a>'
     )
     assert expected_link in message
-    assert "Club &lt;Especial&gt;" in message
+    assert "Sólo socios &lt;Especial&gt; &amp; amigos" in message
+    assert "Club <Especial>" not in message
 
 
 def test_candidate_ordering_uses_explicit_signal_tiers(repository: SQLiteRepository) -> None:
