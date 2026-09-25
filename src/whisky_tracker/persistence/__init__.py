@@ -6,11 +6,18 @@ from whisky_tracker.persistence.models import (
     PriceChange,
     StoredObservation,
 )
-from whisky_tracker.persistence.repository import PersistenceError, SQLiteRepository
+from whisky_tracker.persistence.repository import (
+    ListingIdentityConflict,
+    MatchingSaveResult,
+    PersistenceError,
+    SQLiteRepository,
+)
 
 __all__ = [
     "HistoryFilter",
+    "ListingIdentityConflict",
     "ListingKey",
+    "MatchingSaveResult",
     "PersistenceError",
     "PriceChange",
     "SQLiteRepository",

@@ -431,6 +431,74 @@ def test_persistence_failure_stops_before_notifications(repository: SQLiteReposi
     assert notifier.messages == []
 
 
+def test_gtin_listing_conflict_is_excluded_from_alerts_and_reported(
+    repository: SQLiteRepository, caplog: pytest.LogCaptureFixture
+) -> None:
+    old_gtin = "5000267107776"
+    new_gtin = "5000267197630"
+    existing = observation("Jumbo", "31408", gtin=old_gtin)
+    historical_partner = observation("Carrefour", "historical", gtin=old_gtin)
+    matcher = ProductMatcher()
+    repository.save_matching_result(matcher.match((existing, historical_partner)))
+    old_listing = repository.connection.execute(
+        "SELECT id, canonical_product_id, gtin FROM retailer_listings WHERE retailer = 'Jumbo'"
+    ).fetchone()
+    incoming = replace(
+        existing,
+        gtin=new_gtin,
+        current_price=Decimal("100"),
+        observed_at=NOW.replace(hour=13),
+        product_url="https://example.test/?token=private-token",
+        context=replace(RetailerContext(), postal_code="private-postcode"),
+    )
+    partner = observation("Coto", "valid-partner", gtin=new_gtin)
+    notifier = FakeNotifier()
+    service, _ = runner(
+        repository,
+        (
+            RetailerCollection("Jumbo", FakeAdapter([incoming])),
+            RetailerCollection("Coto", FakeAdapter([partner])),
+        ),
+        notifier=notifier,
+    )
+    with caplog.at_level(logging.WARNING):
+        summary = run(service.run(dry_run=True))
+    assert len(summary.identity_conflicts) == 1
+    conflict = summary.identity_conflicts[0]
+    assert conflict.retailer == "Jumbo"
+    assert conflict.listing_id == old_listing["id"]
+    assert conflict.existing_canonical_pk == old_listing["canonical_product_id"]
+    assert conflict.incoming_canonical_pk != conflict.existing_canonical_pk
+    assert conflict.match_confidence.value == "exact_gtin"
+    assert summary.observations_stored == 1
+    persisted_listing = repository.connection.execute(
+        "SELECT canonical_product_id, gtin FROM retailer_listings WHERE id = ?",
+        (old_listing["id"],),
+    ).fetchone()
+    assert tuple(persisted_listing) == (old_listing["canonical_product_id"], old_gtin)
+    assert (
+        len(
+            repository.get_price_history(HistoryFilter(canonical_id=conflict.incoming_canonical_id))
+        )
+        == 1
+    )
+    old_canonical_id = repository.connection.execute(
+        "SELECT canonical_id FROM canonical_products WHERE id = ?",
+        (old_listing["canonical_product_id"],),
+    ).fetchone()[0]
+    assert len(repository.get_price_history(HistoryFilter(canonical_id=old_canonical_id))) == 2
+    assert len(summary.eligible_alerts) == 1
+    assert [offer.observation.retailer for offer in summary.eligible_alerts[0].offers] == ["Coto"]
+    assert summary.eligible_alerts[0].second_best_offer is None
+    assert repository.connection.execute("SELECT COUNT(*) FROM alert_events").fetchone()[0] == 1
+    assert all("Jumbo" not in message for message in notifier.messages)
+    rendered = caplog.text + format_run_summary(summary, include_alert_messages=True)
+    assert "Listing identity conflict" in rendered
+    assert "listing_id=" in rendered
+    for secret in ("private-token", "private-postcode", old_gtin, new_gtin, "100"):
+        assert secret not in rendered
+
+
 def test_logs_and_status_do_not_expose_secret_exception_text(
     repository: SQLiteRepository, caplog: pytest.LogCaptureFixture
 ) -> None:

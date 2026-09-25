@@ -35,6 +35,7 @@ def format_run_summary(summary: RunSummary, *, include_alert_messages: bool = Fa
             "",
             "Persistence",
             f"  observations stored: {summary.observations_stored}",
+            f"  identity conflicts: {len(summary.identity_conflicts)}",
             f"  database: {summary.database_path}",
             f"  schema version: {summary.schema_version}",
             "",

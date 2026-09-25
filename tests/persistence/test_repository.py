@@ -410,33 +410,65 @@ def test_unmatched_history_survives_later_canonical_association(
     assert len(canonical_history) == 2
 
 
-def test_batch_rolls_back_on_conflicting_listing_assignment(repository: SQLiteRepository) -> None:
+def test_conflicting_listing_isolated_and_other_observations_persist(
+    repository: SQLiteRepository,
+) -> None:
     item = observation()
     repository.save_matching_result(MatchingResult((group(product("first"), item),), ()))
-    before = repository.connection.total_changes
+    before_listing = dict(
+        repository.connection.execute("SELECT * FROM retailer_listings").fetchone()
+    )
     new_item = observation("j1", retailer="Jumbo")
-    bad_result = MatchingResult(
+    conflict = replace(
+        item,
+        gtin="7790895001000",
+        observed_at=NOW + timedelta(hours=1),
+        current_price=Decimal("100"),
+        title="Conflicting title",
+        promotions=(Promotion("Special", PromotionKind.LOYALTY, False),),
+    )
+    incoming = product("conflict", gtins=frozenset(("7790895001000",)))
+    result = MatchingResult(
         (
             group(product("new-product", gtins=frozenset()), new_item),
-            group(product("conflict", gtins=frozenset()), item),
+            group(incoming, conflict),
         ),
         (),
     )
-    with pytest.raises(PersistenceError, match="already assigned"):
-        repository.save_matching_result(bad_result)
+    saved = repository.save_matching_result(result)
+    assert len(saved.conflicts) == 1
+    assert saved.groups == (result.groups[0],)
     assert (
-        repository.connection.execute(
-            "SELECT COUNT(*) FROM canonical_products WHERE canonical_id = 'new-product'"
-        ).fetchone()[0]
+        dict(
+            repository.connection.execute("SELECT * FROM retailer_listings WHERE id = 1").fetchone()
+        )
+        == before_listing
+    )
+    assert (
+        len(
+            repository.get_price_history(
+                HistoryFilter(listing=ListingKey("Carrefour", "c1", "sku-c1"))
+            )
+        )
+        == 1
+    )
+    assert (
+        len(
+            repository.get_price_history(HistoryFilter(listing=ListingKey("Jumbo", "j1", "sku-j1")))
+        )
+        == 1
+    )
+    assert repository.observation_count() == 2
+    assert (
+        repository.connection.execute("SELECT COUNT(*) FROM observation_promotions").fetchone()[0]
         == 0
     )
     assert (
         repository.connection.execute(
-            "SELECT COUNT(*) FROM retailer_listings WHERE retailer = 'Jumbo'"
+            "SELECT COUNT(*) FROM canonical_products WHERE canonical_id = 'conflict'"
         ).fetchone()[0]
         == 0
     )
-    assert repository.connection.total_changes > before  # SQLite counts rolled-back attempts too.
 
 
 @pytest.mark.parametrize("gtin", [None, "7790895001000"])
@@ -461,20 +493,16 @@ def test_listing_conflict_reports_row_ids_without_sensitive_runtime_values(
         context=replace(STORE, postal_code="private-postcode", store_name="private-store"),
     )
     before = "\n".join(repository.connection.iterdump())
-
-    with pytest.raises(PersistenceError) as error:
-        repository.save_matching_result(MatchingResult((group(incoming, live_item),), ()))
-
-    assert isinstance(error.value.__cause__, ValueError)
-    message = str(error.value)
-    assert "retailer listing is already assigned to another canonical product" in message
-    for expected in (
-        "listing_id=1",
-        f"existing_canonical_pk={existing_pk}",
-        f"incoming_canonical_pk={incoming_pk}",
-        "match_confidence='strong_attributes'",
-    ):
-        assert expected in message
+    saved = repository.save_matching_result(MatchingResult((group(incoming, live_item),), ()))
+    assert saved.groups == ()
+    diagnostic = saved.conflicts[0]
+    assert diagnostic.retailer == "Carrefour"
+    assert diagnostic.listing_id == 1
+    assert diagnostic.existing_canonical_pk == existing_pk
+    assert diagnostic.incoming_canonical_pk == incoming_pk
+    assert diagnostic.incoming_canonical_id == "incoming"
+    assert diagnostic.match_confidence is MatchConfidence.STRONG_ATTRIBUTES
+    message = repr(diagnostic)
     for excluded in (
         "https://",
         "secret-token",
@@ -489,6 +517,65 @@ def test_listing_conflict_reports_row_ids_without_sensitive_runtime_values(
         assert excluded not in message
     assert "\n" not in message
     assert "\n".join(repository.connection.iterdump()) == before
+
+
+def test_same_canonical_and_exact_gtin_groups_continue_normally(
+    repository: SQLiteRepository,
+) -> None:
+    item = observation()
+    first = group(product(), item)
+    repository.save_matching_result(MatchingResult((first,), ()))
+    later = replace(item, observed_at=NOW + timedelta(hours=1), current_price=Decimal("42000"))
+    exact = ProductMatchGroup(
+        product("alternate-id-same-gtin"),
+        (later, observation("partner", retailer="Jumbo", observed_at=later.observed_at)),
+        MatchConfidence.EXACT_GTIN,
+        "same GTIN",
+    )
+    saved = repository.save_matching_result(MatchingResult((exact,), ()))
+    assert saved.conflicts == ()
+    assert saved.groups == (exact,)
+    assert repository.observation_count() == 3
+    assert len(repository.get_price_history(HistoryFilter(canonical_id="jw-black-750"))) == 3
+
+
+def test_conflicted_group_does_not_add_excluded_gtin_to_valid_canonical(
+    repository: SQLiteRepository,
+) -> None:
+    old = observation("old")
+    repository.save_matching_result(
+        MatchingResult((group(product("old", gtins=frozenset()), old),), ())
+    )
+    conflicting = replace(old, gtin="5000267107776", observed_at=NOW + timedelta(hours=1))
+    valid = replace(observation("valid", retailer="Coto"), gtin="5000267197630")
+    incoming = product("incoming", gtins=frozenset(("5000267107776", "5000267197630")))
+    saved = repository.save_matching_result(
+        MatchingResult((group(incoming, conflicting, valid),), ())
+    )
+    assert len(saved.conflicts) == 1
+    assert saved.groups[0].observations == (valid,)
+    assert saved.groups[0].canonical_product.gtins == frozenset((valid.gtin,))
+    gtins = repository.connection.execute("SELECT gtin FROM canonical_gtins").fetchall()
+    assert [row["gtin"] for row in gtins] == [valid.gtin]
+
+
+def test_other_persistence_errors_still_roll_back_the_whole_batch(
+    repository: SQLiteRepository,
+) -> None:
+    valid = group(product("valid"), observation("valid"))
+    transient = replace(
+        observation("invalid"),
+        context=replace(STORE, coordinates=(12.3, -45.6)),
+    )
+    with pytest.raises(PersistenceError, match="transient location coordinates"):
+        repository.save_matching_result(MatchingResult((valid,), (transient,)))
+    assert repository.observation_count() == 0
+    assert (
+        repository.connection.execute("SELECT COUNT(*) FROM retailer_listings").fetchone()[0] == 0
+    )
+    assert (
+        repository.connection.execute("SELECT COUNT(*) FROM canonical_products").fetchone()[0] == 0
+    )
 
 
 def test_normal_listing_upserts_enrich_preserve_and_reuse_association(

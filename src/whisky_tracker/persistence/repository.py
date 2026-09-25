@@ -4,6 +4,7 @@ import hashlib
 import json
 import sqlite3
 from collections.abc import Iterable
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -36,6 +37,26 @@ DEFAULT_DATABASE_PATH = Path("data/whisky_tracker.db")
 
 class PersistenceError(RuntimeError):
     """A persistence operation failed and its transaction was rolled back."""
+
+
+@dataclass(frozen=True, slots=True)
+class ListingIdentityConflict:
+    """Identity-only diagnostic for an observation excluded from a matching run."""
+
+    retailer: str
+    listing_id: int
+    existing_canonical_pk: int
+    incoming_canonical_pk: int | None
+    incoming_canonical_id: str
+    match_confidence: MatchConfidence
+
+
+@dataclass(frozen=True, slots=True)
+class MatchingSaveResult:
+    """Groups safe to use downstream and listing conflicts excluded from this run."""
+
+    groups: tuple[ProductMatchGroup, ...]
+    conflicts: tuple[ListingIdentityConflict, ...]
 
 
 class SQLiteRepository:
@@ -111,22 +132,73 @@ class SQLiteRepository:
         row = self.connection.execute("SELECT COUNT(*) AS count FROM observations").fetchone()
         return int(row["count"])
 
-    def save_matching_result(self, result: MatchingResult) -> None:
-        """Atomically persist matched groups and every unmatched observation."""
+    def save_matching_result(self, result: MatchingResult) -> MatchingSaveResult:
+        """Atomically persist valid observations and exclude listing identity conflicts."""
         self._require_schema()
+        saved_groups: list[ProductMatchGroup] = []
+        conflicts: list[ListingIdentityConflict] = []
         try:
             with self.connection:
                 for group in result.groups:
+                    canonical_row = self._canonical_row(group.canonical_product)
+                    incoming_pk = int(canonical_row["id"]) if canonical_row else None
+                    accepted: list[ProductObservation] = []
+                    for observation in group.observations:
+                        listing = self.connection.execute(
+                            """SELECT id, canonical_product_id FROM retailer_listings
+                               WHERE retailer = ? AND retailer_product_id = ?
+                                 AND retailer_sku_id = ?""",
+                            (
+                                observation.retailer,
+                                observation.retailer_product_id,
+                                observation.retailer_sku_id,
+                            ),
+                        ).fetchone()
+                        if (
+                            listing is not None
+                            and listing["canonical_product_id"] is not None
+                            and listing["canonical_product_id"] != incoming_pk
+                        ):
+                            conflicts.append(
+                                ListingIdentityConflict(
+                                    retailer=observation.retailer,
+                                    listing_id=int(listing["id"]),
+                                    existing_canonical_pk=int(listing["canonical_product_id"]),
+                                    incoming_canonical_pk=incoming_pk,
+                                    incoming_canonical_id=group.canonical_product.canonical_id,
+                                    match_confidence=group.match_confidence,
+                                )
+                            )
+                        else:
+                            accepted.append(observation)
+                    if not accepted:
+                        continue
+                    canonical_product = group.canonical_product
+                    if len(accepted) != len(group.observations):
+                        accepted_gtins = {item.gtin for item in accepted if item.gtin}
+                        canonical_product = replace(
+                            canonical_product,
+                            gtins=canonical_product.gtins & accepted_gtins,
+                        )
                     try:
-                        canonical_pk = self._upsert_canonical(group.canonical_product)
+                        canonical_pk = self._upsert_canonical(canonical_product)
                     except ValueError as exc:
                         raise ValueError(f"{exc}; {_safe_group_identity(group)}") from exc
-                    for observation in group.observations:
+                    for observation in accepted:
                         self._save_observation(observation, canonical_pk, group.match_confidence)
+                    saved_groups.append(
+                        ProductMatchGroup(
+                            canonical_product,
+                            tuple(accepted),
+                            group.match_confidence,
+                            group.match_reason,
+                        )
+                    )
                 for observation in result.unmatched:
                     self._save_observation(observation, None)
         except (sqlite3.Error, ValueError) as exc:
             raise PersistenceError(f"matching result was not saved: {exc}") from exc
+        return MatchingSaveResult(tuple(saved_groups), tuple(conflicts))
 
     def save_observations(self, observations: Iterable[ProductObservation]) -> None:
         """Atomically persist observations without assigning canonical identities."""

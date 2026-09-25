@@ -117,12 +117,24 @@ class WhiskyTrackerRunner:
             len(matching_result.unmatched),
         )
         before = self.repository.observation_count()
-        self.repository.save_matching_result(matching_result)
+        save_result = self.repository.save_matching_result(matching_result)
         stored = self.repository.observation_count() - before
         logger.info("Persistence completed with %d new observation rows", stored)
+        for conflict in save_result.conflicts:
+            logger.warning(
+                "Listing identity conflict: retailer=%s listing_id=%d "
+                "existing_canonical_pk=%d incoming_canonical_pk=%s "
+                "incoming_canonical_id=%s match_confidence=%s",
+                conflict.retailer,
+                conflict.listing_id,
+                conflict.existing_canonical_pk,
+                conflict.incoming_canonical_pk,
+                conflict.incoming_canonical_id,
+                conflict.match_confidence.value,
+            )
 
         current_by_canonical: dict[str, tuple[CanonicalProduct, list[ProductObservation]]] = {}
-        for group in matching_result.groups:
+        for group in save_result.groups:
             persisted_product = self.repository.resolve_canonical_product(group.canonical_product)
             entry = current_by_canonical.setdefault(
                 persisted_product.canonical_id, (persisted_product, [])
@@ -167,6 +179,7 @@ class WhiskyTrackerRunner:
                 if group.match_confidence.value == "fuzzy_supported"
             ),
             observations_stored=stored,
+            identity_conflicts=save_result.conflicts,
             database_path=self.database_path,
             schema_version=self.repository.schema_version,
             eligible_alerts=tuple(eligible),

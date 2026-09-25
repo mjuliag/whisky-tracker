@@ -5,6 +5,7 @@ from enum import StrEnum
 
 from whisky_tracker.alerts import ProductAlert
 from whisky_tracker.matching import ProductMatchGroup
+from whisky_tracker.persistence import ListingIdentityConflict
 
 
 class RetailerRunStatus(StrEnum):
@@ -42,6 +43,7 @@ class RunSummary:
     match_confidence: tuple[tuple[str, int], ...]
     fuzzy_groups: tuple[ProductMatchGroup, ...]
     observations_stored: int
+    identity_conflicts: tuple[ListingIdentityConflict, ...]
     database_path: str
     schema_version: int
     eligible_alerts: tuple[ProductAlert, ...]
