@@ -12,6 +12,7 @@ from whisky_tracker.alerts import (
     alert_priority_key,
     format_alert,
 )
+from whisky_tracker.alerts.preferences import PreferenceTier, preference_tier
 from whisky_tracker.matching import (
     CanonicalProduct,
     MatchConfidence,
@@ -556,6 +557,80 @@ def test_candidate_ordering_uses_explicit_signal_tiers(repository: SQLiteReposit
         key=alert_priority_key,
     )
     assert ranked == [strongest, cross_combined, price_drop, historical, promotion_only]
+
+
+@pytest.mark.parametrize(
+    ("brand", "expression", "expected"),
+    [
+        ("Jack Daniel's", "gentleman", PreferenceTier.PRIORITY),
+        ("JACK DANIELS", "tennessee apple", PreferenceTier.PRIORITY),
+        ("Jameson", "black barrel", PreferenceTier.PRIORITY),
+        ("Chivas Regal", "xv", PreferenceTier.PRIORITY),
+        ("Johnnie Walker", "red label", PreferenceTier.PRIORITY),
+        ("johnnie walker", "black label", PreferenceTier.PRIORITY),
+        ("Johnnie Walker", "double black", PreferenceTier.PRIORITY),
+        ("Old Parr", "12", PreferenceTier.PRIORITY),
+        ("Grand Old Parr", "12", PreferenceTier.PRIORITY),
+        ("Jim Beam", "white", PreferenceTier.NORMAL),
+        ("J&B", "rare", PreferenceTier.NORMAL),
+        ("j b", "rare", PreferenceTier.NORMAL),
+        ("JB", "rare", PreferenceTier.LOW),
+        ("Singleton", "12", PreferenceTier.NORMAL),
+        ("Blenders", "pride", PreferenceTier.LOW),
+        ("Unconfigured Distillery", "Johnnie Walker Black", PreferenceTier.LOW),
+        ("Johnnie Walker Reserve", "black", PreferenceTier.LOW),
+        (None, "Jameson Black Barrel", PreferenceTier.LOW),
+    ],
+)
+def test_preference_uses_exact_normalized_canonical_brand(
+    brand: str | None, expression: str, expected: PreferenceTier
+) -> None:
+    assert preference_tier(replace(PRODUCT, brand=brand, expression=expression)) == expected
+
+
+def test_product_alert_preference_precedes_signals_and_preserves_signal_order(
+    repository: SQLiteRepository,
+) -> None:
+    promotion = Promotion(
+        "Sale", PromotionKind.GENERAL, True, Decimal("25"), DiscountType.PERCENTAGE
+    )
+    item = observation("50000", promotions=(promotion,))
+    save(repository, item)
+    base = AlertEngine(repository).evaluate_product(PRODUCT, (item,))
+    assert base is not None
+
+    def candidate(brand: str, canonical_id: str, signals: frozenset[AlertType]):
+        offer = replace(base.best_offer, alert_types=signals)
+        return replace(
+            base,
+            canonical_product=replace(PRODUCT, brand=brand, canonical_id=canonical_id),
+            offers=(offer,),
+            best_offer=offer,
+            alert_types=signals,
+        )
+
+    weak_priority = candidate("Jack Daniels", "z-priority", frozenset({AlertType.PROMOTION}))
+    strong_normal = candidate(
+        "J&B", "a-normal", frozenset({AlertType.HISTORICAL_LOW, AlertType.PRICE_DROP})
+    )
+    weak_normal = candidate("Singleton", "b-normal", frozenset({AlertType.PROMOTION}))
+    weak_normal_earlier = candidate("Jim Beam", "a-normal", frozenset({AlertType.PROMOTION}))
+    strong_low = candidate(
+        "Blenders", "a-low", frozenset({AlertType.HISTORICAL_LOW, AlertType.PRICE_DROP})
+    )
+
+    assert sorted(
+        (strong_low, weak_normal, weak_priority, strong_normal, weak_normal_earlier),
+        key=alert_priority_key,
+    ) == [weak_priority, strong_normal, weak_normal_earlier, weak_normal, strong_low]
+
+
+def test_preference_does_not_create_an_eligible_alert(repository: SQLiteRepository) -> None:
+    item = observation("50000")
+    save(repository, item)
+    assert preference_tier(PRODUCT) == PreferenceTier.PRIORITY
+    assert AlertEngine(repository).evaluate_product(PRODUCT, (item,)) is None
+    assert repository.connection.execute("SELECT COUNT(*) FROM alert_events").fetchone()[0] == 0
 
 
 def test_product_alert_consolidates_retailers_and_keeps_signal_ownership(

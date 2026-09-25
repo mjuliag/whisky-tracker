@@ -1,10 +1,11 @@
 """Transparent business-rule ordering for eligible alerts."""
 
 from whisky_tracker.alerts.models import Alert, AlertType, ProductAlert
+from whisky_tracker.alerts.preferences import preference_tier
 
 
-def alert_priority_key(alert: Alert | ProductAlert) -> tuple[int, int, str, str, str, str]:
-    """Sort strongest combined purchasing signals first, with stable identity tie-breakers."""
+def alert_priority_key(alert: Alert | ProductAlert) -> tuple[int | str, ...]:
+    """Sort eligible product alerts by preference, then existing signals and tie-breakers."""
     types = alert.alert_types
     if isinstance(alert, ProductAlert):
         offer_types = [offer.alert_types for offer in alert.offers]
@@ -28,6 +29,7 @@ def alert_priority_key(alert: Alert | ProductAlert) -> tuple[int, int, str, str,
             tier = 6
         observation = alert.best_offer.observation
         return (
+            preference_tier(alert.canonical_product),
             tier,
             -sum(len(item) for item in offer_types),
             alert.canonical_product.canonical_id,

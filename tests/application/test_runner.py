@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -334,6 +335,59 @@ def test_default_notification_cap_sends_ten_and_defers_remaining(
     assert summary.alerts_deferred_by_cap == 2
     assert all(
         not repository.is_alert_sent(alert.fingerprint) for alert in summary.eligible_alerts[10:]
+    )
+
+
+def test_preference_selects_delivery_without_losing_low_history_or_candidates(
+    repository: SQLiteRepository,
+) -> None:
+    notifier = FakeNotifier()
+    items = []
+    for index in range(12):
+        brand = "Blenders" if index < 10 else "J&B" if index == 10 else "Jack Daniels"
+        volume = 700 + index
+        for retailer, price in (("Coto", "40000"), ("Carrefour", "50000")):
+            item = observation(
+                retailer,
+                f"preference-{index}-{retailer}",
+                price=price,
+                promotion=index < 10,
+                gtin=f"7790895003{index:03d}",
+                volume=volume,
+            )
+            items.append(replace(item, brand=brand, title=f"{brand} expression {volume} ml"))
+
+    service, _ = runner(
+        repository,
+        (RetailerCollection("Mixed", FakeAdapter(items)),),
+        notifier=notifier,
+    )
+    summary = run(service.run())
+
+    assert summary.total_observations == summary.observations_stored == 24
+    assert len(summary.eligible_alerts) == 12
+    assert [alert.canonical_product.brand for alert in summary.eligible_alerts[:2]] == [
+        "jack daniels",
+        "j b",
+    ]
+    assert all(alert.canonical_product.brand == "blenders" for alert in summary.eligible_alerts[2:])
+    assert len(notifier.messages) == summary.alerts_sent == 10
+    assert summary.alerts_deferred_by_cap == 2
+    assert all(
+        repository.is_alert_sent(alert.fingerprint) for alert in summary.eligible_alerts[:10]
+    )
+    assert all(
+        not repository.is_alert_sent(alert.fingerprint) for alert in summary.eligible_alerts[10:]
+    )
+    assert repository.connection.execute("SELECT COUNT(*) FROM alert_events").fetchone()[0] == 12
+    low_alert = summary.eligible_alerts[-1]
+    assert (
+        len(
+            repository.get_price_history(
+                HistoryFilter(canonical_id=low_alert.canonical_product.canonical_id)
+            )
+        )
+        == 2
     )
 
 
