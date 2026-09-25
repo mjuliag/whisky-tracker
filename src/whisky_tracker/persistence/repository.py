@@ -8,7 +8,12 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
-from whisky_tracker.matching.models import CanonicalProduct, MatchingResult, ProductMatchGroup
+from whisky_tracker.matching.models import (
+    CanonicalProduct,
+    MatchConfidence,
+    MatchingResult,
+    ProductMatchGroup,
+)
 from whisky_tracker.matching.normalization import (
     extract_known_expression,
     pack_from_observation,
@@ -117,7 +122,7 @@ class SQLiteRepository:
                     except ValueError as exc:
                         raise ValueError(f"{exc}; {_safe_group_identity(group)}") from exc
                     for observation in group.observations:
-                        self._save_observation(observation, canonical_pk)
+                        self._save_observation(observation, canonical_pk, group.match_confidence)
                 for observation in result.unmatched:
                     self._save_observation(observation, None)
         except (sqlite3.Error, ValueError) as exc:
@@ -408,11 +413,18 @@ class SQLiteRepository:
             (product.canonical_id,),
         ).fetchone()
 
-    def _save_observation(self, observation: ProductObservation, canonical_pk: int | None) -> int:
+    def _save_observation(
+        self,
+        observation: ProductObservation,
+        canonical_pk: int | None,
+        match_confidence: MatchConfidence | None = None,
+    ) -> int:
         context = observation.context
         if context.coordinates is not None:
             raise ValueError("transient location coordinates cannot be persisted")
-        listing_pk, associated_canonical = self._upsert_listing(observation, canonical_pk)
+        listing_pk, associated_canonical = self._upsert_listing(
+            observation, canonical_pk, match_confidence
+        )
         effective_canonical = canonical_pk or associated_canonical
         fingerprint = _snapshot_fingerprint(observation)
         longitude, latitude = context.coordinates or (None, None)
@@ -459,7 +471,10 @@ class SQLiteRepository:
         return observation_pk
 
     def _upsert_listing(
-        self, observation: ProductObservation, canonical_pk: int | None
+        self,
+        observation: ProductObservation,
+        canonical_pk: int | None,
+        match_confidence: MatchConfidence | None = None,
     ) -> tuple[int, int | None]:
         now = _timestamp(datetime.now(UTC))
         key = (
@@ -477,7 +492,13 @@ class SQLiteRepository:
             and canonical_pk
             and existing["canonical_product_id"] not in {None, canonical_pk}
         ):
-            raise ValueError("retailer listing is already assigned to another canonical product")
+            raise ValueError(
+                "retailer listing is already assigned to another canonical product; "
+                f"listing_id={existing['id']} "
+                f"existing_canonical_pk={existing['canonical_product_id']} "
+                f"incoming_canonical_pk={canonical_pk} "
+                f"match_confidence={match_confidence.value if match_confidence else None!r}"
+            )
         self.connection.execute(
             """
             INSERT INTO retailer_listings(

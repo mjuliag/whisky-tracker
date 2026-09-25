@@ -437,3 +437,85 @@ def test_batch_rolls_back_on_conflicting_listing_assignment(repository: SQLiteRe
         == 0
     )
     assert repository.connection.total_changes > before  # SQLite counts rolled-back attempts too.
+
+
+@pytest.mark.parametrize("gtin", [None, "7790895001000"])
+def test_listing_conflict_reports_row_ids_without_sensitive_runtime_values(
+    repository: SQLiteRepository, gtin: str | None
+) -> None:
+    item = observation(product_id="c1-secret-token")
+    repository.save_matching_result(MatchingResult((group(product("first"), item),), ()))
+    existing_pk = repository.upsert_canonical_product(product("first"))
+    incoming = product(
+        "incoming",
+        brand="Other brand",
+        expression="Other expression",
+        gtins=frozenset((gtin,)) if gtin else frozenset(),
+    )
+    incoming_pk = repository.upsert_canonical_product(incoming)
+    live_item = replace(
+        item,
+        title="Updated\nlisting title",
+        gtin=gtin,
+        product_url="https://example.test/?token=secret-token",
+        context=replace(STORE, postal_code="private-postcode", store_name="private-store"),
+    )
+    before = "\n".join(repository.connection.iterdump())
+
+    with pytest.raises(PersistenceError) as error:
+        repository.save_matching_result(MatchingResult((group(incoming, live_item),), ()))
+
+    assert isinstance(error.value.__cause__, ValueError)
+    message = str(error.value)
+    assert "retailer listing is already assigned to another canonical product" in message
+    for expected in (
+        "listing_id=1",
+        f"existing_canonical_pk={existing_pk}",
+        f"incoming_canonical_pk={incoming_pk}",
+        "match_confidence='strong_attributes'",
+    ):
+        assert expected in message
+    for excluded in (
+        "https://",
+        "secret-token",
+        "private-postcode",
+        "private-store",
+        "Updated listing title",
+        "Other brand",
+        "Other expression",
+        "7790895000997",
+        "7790895001000",
+    ):
+        assert excluded not in message
+    assert "\n" not in message
+    assert "\n".join(repository.connection.iterdump()) == before
+
+
+def test_normal_listing_upserts_enrich_preserve_and_reuse_association(
+    repository: SQLiteRepository,
+) -> None:
+    item = observation()
+    repository.save_observations((item,))
+    repository.save_matching_result(MatchingResult((group(product(), item),), ()))
+    updated = replace(
+        item,
+        title="Updated title",
+        catalog_product_id="changed-catalog",
+        observed_at=NOW + timedelta(hours=1),
+        current_price=Decimal("42000"),
+    )
+    repository.save_matching_result(
+        MatchingResult((group(product("alternate-id-same-gtin"), updated),), ())
+    )
+    unmatched = replace(updated, observed_at=NOW + timedelta(hours=2))
+    repository.save_observations((unmatched,))
+
+    rows = repository.connection.execute("SELECT * FROM retailer_listings").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["title"] == "Updated title"
+    assert rows[0]["catalog_product_id"] == "changed-catalog"
+    canonical_pk = repository.upsert_canonical_product(product())
+    assert rows[0]["canonical_product_id"] == canonical_pk
+    history = repository.get_price_history(HistoryFilter(canonical_id="jw-black-750"))
+    assert len(history) == 3
+    assert history[-1].current_price == Decimal("42000")
